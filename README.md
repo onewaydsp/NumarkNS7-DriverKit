@@ -127,6 +127,81 @@ csrutil enable
 
 ---
 
+## System Architecture
+
+```mermaid
+flowchart TB
+    subgraph HW["Hardware"]
+        NS7["Numark NS7<br/>USB 2.0 Device<br/>VID 0x15E4 / PID 0x0071"]
+    end
+
+    subgraph KERNEL["macOS Kernel (xnu)"]
+        IOUSB["IOUSBHostFamily<br/>USB enumeration & transport"]
+    end
+
+    subgraph DEXT["NumarkNS7Driver.dext (userspace System Extension)"]
+        direction TB
+        Root["NumarkNS7Driver<br/>USB device lifecycle<br/>Start / Stop / matching"]
+        Audio["NumarkNS7AudioEngine<br/>UAC 1.0 isochronous<br/>IN 0x81 / OUT 0x01<br/>4ch · 24-bit · 44.1 kHz"]
+        MIDI["NumarkNS7MIDIDriver<br/>USB MIDI Class bulk<br/>EP 0x08"]
+        UC["NumarkNS7UserClient<br/>IPC to host apps"]
+        Root --> Audio
+        Root --> MIDI
+        Root --> UC
+    end
+
+    subgraph FRAMEWORKS["DriverKit Frameworks"]
+        ADK["AudioDriverKit<br/>IOUserAudioDevice / Stream"]
+        MDK["MIDIDriverKit"]
+        DK["DriverKit + USBDriverKit"]
+    end
+
+    subgraph SYSSVCS["System Services"]
+        CoreAudio["CoreAudio HAL<br/>&quot;Numark NS7&quot;"]
+        CoreMIDI["CoreMIDI<br/>&quot;Numark NS7 MIDI&quot;"]
+    end
+
+    subgraph APPS["User Applications"]
+        Serato["Serato DJ / Traktor / etc."]
+        Logic["Logic / Ableton / DAWs"]
+    end
+
+    NS7 <-->|"USB 2.0"| IOUSB
+    IOUSB <-->|"IOUSBHostDevice<br/>matching"| Root
+    Audio -->|"register device"| ADK
+    MIDI -->|"register port"| MDK
+    Root -.->|"DriverKit runtime"| DK
+    ADK --> CoreAudio
+    MDK --> CoreMIDI
+    CoreAudio --> Serato
+    CoreAudio --> Logic
+    CoreMIDI --> Serato
+    UC <-.->|"IOUserClient IPC"| Serato
+
+    classDef hw fill:#2d3748,stroke:#4a5568,color:#fff
+    classDef kernel fill:#742a2a,stroke:#c53030,color:#fff
+    classDef dext fill:#1a365d,stroke:#3182ce,color:#fff
+    classDef fw fill:#22543d,stroke:#38a169,color:#fff
+    classDef sys fill:#553c9a,stroke:#805ad5,color:#fff
+    classDef app fill:#744210,stroke:#d69e2e,color:#fff
+    class NS7 hw
+    class IOUSB kernel
+    class Root,Audio,MIDI,UC dext
+    class ADK,MDK,DK fw
+    class CoreAudio,CoreMIDI sys
+    class Serato,Logic app
+```
+
+**Data flow at a glance:**
+
+1. **USB enumeration** — macOS detects the NS7; `IOUSBHostFamily` matches it against the `IOKitPersonalities` in `Info.plist` and loads the `.dext` in userspace.
+2. **Interface claim** — `NumarkNS7Driver::Start` opens USB interfaces 1/2 (audio) and 3 (MIDI), then spawns the audio engine and MIDI driver.
+3. **Audio path** — isochronous IN/OUT transfers are ring-buffered, format-converted (24-bit packed LE ↔ 32-bit float), and surfaced to CoreAudio via `AudioDriverKit`.
+4. **MIDI path** — bulk reads on EP 0x08 are parsed as USB MIDI Class packets and dispatched to CoreMIDI via `MIDIDriverKit`.
+5. **Crash isolation** — everything above runs in a sandboxed userspace process. A fault restarts the `.dext`, not the kernel.
+
+---
+
 ## How It Works
 
 ### USB Audio (replaces NumarkNS7Audio.kext + NumarkNS7AudioHAL.plugin)
