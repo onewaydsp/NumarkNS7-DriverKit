@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  NumarkNS7Driver.entitlements
+  
+  IMPORTANT: The USB transport entitlement (com.apple.developer.driverkit.transport.usb)
+  requires explicit approval from Apple before it will work in production.
+  
+  Request it at: https://developer.apple.com/contact/request/driverkit
+  
+  For local development/testing you can run with System Integrity Protection
+  disabled and the driver loaded manually, but for distribution you need
+  the entitlement approved.
+-->
+<plist version="1.0">
+<dict>
+
+    <!-- Core DriverKit entitlement — required for all DriverKit extensions -->
+    <key>com.apple.developer.driverkit</key>
+    <true/>
+
+    <!-- USB transport — required to match against IOUSBHostDevice.
+         THIS REQUIRES APPLE APPROVAL. Apply at:
+         https://developer.apple.com/contact/request/driverkit        -->
+    <key>com.apple.developer.driverkit.transport.usb</key>
+    <true/>
+
+    <!-- Allow the driver to communicate with the host app / audio server
+         via IOUserClient. Required for the HAL plugin side. -->
+    <key>com.apple.developer.driverkit.userclient-access</key>
+    <array>
+        <string>com.numark.ns7.driverkit</string>
+    </array>
+
+    <!-- Audio server plugin — needed to register with CoreAudio as
+         a HAL device. This replaces the old NumarkNS7AudioHAL.plugin. -->
+    <key>com.apple.developer.driverkit.allow-any-userclient-access</key>
+    <false/>
+
+    <!-- Family-specific entitlement for USB audio devices -->
+    <key>com.apple.developer.driverkit.family.audio</key>
+    <true/>
+
+</dict>
+</plist>

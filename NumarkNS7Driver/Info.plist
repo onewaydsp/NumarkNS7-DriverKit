@@ -1,0 +1,174 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  NumarkNS7Driver - Info.plist
+  DriverKit System Extension for Numark NS7 on Apple Silicon (M1 Pro and later)
+
+  USB Device Info (extracted from original kext):
+    Vendor  ID : 0x15E4 (5604 decimal) — Ploytec GmbH / Numark
+    Product ID : 0x0071 (113 decimal)  — Numark NS7
+    MIDI Ports : 1 port ("MIDI")
+
+  Original kext bundle: com.numark.ns7.usb  v3.3.11
+  Original developer  : Ploytec GmbH (eric@ploytec.com)
+  Build machine OS    : macOS 10.12 Sierra (15G1004)
+  Last compiled       : 2016-09-29
+
+  This DriverKit replacement targets macOS 12.0+ on arm64 (Apple Silicon).
+  DriverKit runs entirely in userspace — no kernel code required.
+
+  TO USE THIS DRIVER you must:
+    1. Open the Xcode project (NumarkNS7Driver.xcodeproj)
+    2. Set your Apple Developer Team ID in Signing & Capabilities
+    3. Request the "com.apple.developer.driverkit.transport.usb" entitlement
+       from Apple at: https://developer.apple.com/contact/request/driverkit
+    4. Build & Run — macOS will prompt to allow the system extension
+-->
+<plist version="1.0">
+<dict>
+
+    <!-- ── Bundle Identity ───────────────────────────────────────────── -->
+    <key>CFBundleIdentifier</key>
+    <string>com.numark.ns7.driverkit</string>
+
+    <key>CFBundleName</key>
+    <string>NumarkNS7Driver</string>
+
+    <key>CFBundleDisplayName</key>
+    <string>Numark NS7 USB Audio/MIDI Driver</string>
+
+    <key>CFBundleExecutable</key>
+    <string>NumarkNS7Driver</string>
+
+    <key>CFBundlePackageType</key>
+    <string>DEXT</string>
+
+    <key>CFBundleShortVersionString</key>
+    <string>4.0.0</string>
+
+    <key>CFBundleVersion</key>
+    <string>400</string>
+
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+
+    <!-- ── Platform / SDK ────────────────────────────────────────────── -->
+    <key>CFBundleSupportedPlatforms</key>
+    <array>
+        <string>MacOSX</string>
+    </array>
+
+    <key>LSMinimumSystemVersion</key>
+    <string>12.0</string>
+
+    <!-- ── IOKit Personalities (USB Device Matching) ─────────────────── -->
+    <!--
+      IOProviderClass = IOUSBHostDevice  (DriverKit replacement for IOUSBDevice)
+      idVendor  = 5604  (0x15E4) — Ploytec GmbH / Numark
+      idProduct = 113   (0x0071) — NS7
+
+      The driver matches against the USB composite device and then creates
+      child interfaces for audio (bInterfaceClass=1) and MIDI (bInterfaceClass=1
+      with bInterfaceSubClass=3). Audio streaming uses USB Audio Class 1.0.
+    -->
+    <key>IOKitPersonalities</key>
+    <dict>
+
+        <!-- Match the top-level USB device -->
+        <key>NumarkNS7USBDevice</key>
+        <dict>
+            <key>CFBundleIdentifier</key>
+            <string>com.numark.ns7.driverkit</string>
+
+            <key>IOClass</key>
+            <string>IOUserService</string>
+
+            <key>IOProviderClass</key>
+            <string>IOUSBHostDevice</string>
+
+            <key>IOUserClass</key>
+            <string>NumarkNS7Driver</string>
+
+            <!-- USB Vendor and Product IDs extracted from original kext -->
+            <key>idVendor</key>
+            <integer>5604</integer>   <!-- 0x15E4 Ploytec GmbH / Numark -->
+
+            <key>idProduct</key>
+            <integer>113</integer>    <!-- 0x0071 NS7 -->
+
+            <key>IOProbeScore</key>
+            <integer>1000</integer>
+
+            <key>IOMatchCategory</key>
+            <string>NumarkNS7USBDevice</string>
+
+            <!-- Driver-specific config mirrored from original kPtSpecific blob -->
+            <key>NumarkNS7Config</key>
+            <dict>
+                <!-- Number of MIDI ports advertised (was kNumMIDIPorts in original kext) -->
+                <key>MIDIPortCount</key>
+                <integer>1</integer>
+
+                <!-- MIDI port display names (was kMIDIPortNames) -->
+                <key>MIDIPortNames</key>
+                <array>
+                    <string>Numark NS7 MIDI</string>
+                </array>
+
+                <!-- Milliseconds to wait after USB enumeration before sending init
+                     commands. Original kext used kMsWait=200. -->
+                <key>InitWaitMilliseconds</key>
+                <integer>200</integer>
+
+                <!-- Isochronous input channel count for USB Audio Class 1.0
+                     The NS7 presents 4 mono channels (2 stereo pairs):
+                       Ch 1/2 — Deck A output
+                       Ch 3/4 — Deck B output
+                     Original kConfigurationData blob encodes 4 endpoint descriptors. -->
+                <key>AudioInputChannels</key>
+                <integer>4</integer>
+
+                <key>AudioOutputChannels</key>
+                <integer>4</integer>
+
+                <!-- Sample rates supported by the NS7 USB Audio endpoint -->
+                <key>SupportedSampleRates</key>
+                <array>
+                    <integer>44100</integer>
+                    <integer>48000</integer>
+                </array>
+
+                <!-- Bit depth for isochronous audio transfers -->
+                <key>BitDepth</key>
+                <integer>24</integer>
+
+                <!-- USB Audio Class isochronous endpoint addresses
+                     These correspond to the endpoint descriptors in the
+                     kConfigurationData blob from the original kext.
+                     0x81 = IN endpoint 1 (audio from NS7 to host)
+                     0x01 = OUT endpoint 1 (audio from host to NS7) -->
+                <key>AudioINEndpointAddress</key>
+                <integer>129</integer>   <!-- 0x81 -->
+
+                <key>AudioOUTEndpointAddress</key>
+                <integer>1</integer>     <!-- 0x01 -->
+
+                <!-- USB bulk endpoint for MIDI (was kInACR=8 in original) -->
+                <key>MIDIEndpointAddress</key>
+                <integer>8</integer>     <!-- 0x08 -->
+            </dict>
+        </dict>
+
+    </dict>
+
+    <!-- ── DriverKit Entitlements (must also be in .entitlements file) ── -->
+    <!--
+      NOTE: These keys are informational here. The actual enforcement is via
+      the .entitlements file at signing time. Both must match.
+      The USB transport entitlement requires explicit Apple approval.
+    -->
+    <key>com.apple.developer.driverkit</key>
+    <true/>
+
+</dict>
+</plist>

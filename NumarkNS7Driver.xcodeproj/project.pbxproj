@@ -1,0 +1,255 @@
+// !$*UTF8*$!
+// NumarkNS7Driver.xcodeproj/project.pbxproj
+// Generated for DriverKit extension targeting macOS 12.0+ arm64 (Apple Silicon)
+//
+// USB IDs extracted from original kext: VID=0x15E4 (5604) PID=0x0071 (113)
+//
+// SETUP STEPS:
+//   1. Open this project in Xcode 13+
+//   2. In "Signing & Capabilities" set your Team to your Apple Developer account
+//   3. Change the bundle ID prefix from "com.numark" to your own domain if needed
+//   4. Request the DriverKit USB entitlement from Apple (see README.md)
+//   5. Cmd+B to build, then install via the installer script
+
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A1B2C3D401 /* NumarkNS7Driver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D001 /* NumarkNS7Driver.cpp */; };
+		A1B2C3D402 /* Info.plist in Resources */ = {isa = PBXBuildFile; fileRef = A1B2C3D002 /* Info.plist */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		A1B2C3D001 /* NumarkNS7Driver.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = NumarkNS7Driver.cpp; sourceTree = "<group>"; };
+		A1B2C3D002 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		A1B2C3D003 /* NumarkNS7Driver.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = NumarkNS7Driver.h; sourceTree = "<group>"; };
+		A1B2C3D004 /* NumarkNS7Driver.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = NumarkNS7Driver.entitlements; sourceTree = "<group>"; };
+		A1B2C3D005 /* NumarkNS7Driver.dext */ = {isa = PBXFileReference; explicitFileType = wrapper.driver-extension; includeInIndex = 0; path = NumarkNS7Driver.dext; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		A1B2C3E001 = {
+			isa = PBXGroup;
+			children = (
+				A1B2C3E002 /* NumarkNS7Driver */,
+				A1B2C3E003 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		A1B2C3E002 /* NumarkNS7Driver */ = {
+			isa = PBXGroup;
+			children = (
+				A1B2C3D001 /* NumarkNS7Driver.cpp */,
+				A1B2C3D003 /* NumarkNS7Driver.h */,
+				A1B2C3D002 /* Info.plist */,
+				A1B2C3D004 /* NumarkNS7Driver.entitlements */,
+			);
+			path = NumarkNS7Driver;
+			sourceTree = "<group>";
+		};
+		A1B2C3E003 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				A1B2C3D005 /* NumarkNS7Driver.dext */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		A1B2C3F001 /* NumarkNS7Driver */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A1B2C3G001 /* Build configuration list for PBXNativeTarget "NumarkNS7Driver" */;
+			buildPhases = (
+				A1B2C3H001 /* Sources */,
+				A1B2C3H002 /* Resources */,
+				A1B2C3H003 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = NumarkNS7Driver;
+			productName = NumarkNS7Driver;
+			productReference = A1B2C3D005 /* NumarkNS7Driver.dext */;
+			productType = "com.apple.product-type.driver-extension";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A1B2C3I001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastUpgradeCheck = 1400;
+				TargetAttributes = {
+					A1B2C3F001 = {
+						CreatedOnToolsVersion = 14.0;
+					};
+				};
+			};
+			buildConfigurationList = A1B2C3G002 /* Build configuration list for PBXProject "NumarkNS7Driver" */;
+			compatibilityVersion = "Xcode 13.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = A1B2C3E001;
+			productRefGroup = A1B2C3E003 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				A1B2C3F001 /* NumarkNS7Driver */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A1B2C3H001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A1B2C3D401 /* NumarkNS7Driver.cpp in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXResourcesBuildPhase section */
+		A1B2C3H002 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A1B2C3D402 /* Info.plist in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A1B2C3H003 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				/* DriverKit frameworks — linked automatically via SDK */
+				/* DriverKit.framework       */
+				/* USBDriverKit.framework    */
+				/* AudioDriverKit.framework  */
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		A1B2C3J001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ARCHS = arm64;
+				CODE_SIGN_ENTITLEMENTS = NumarkNS7Driver/NumarkNS7Driver.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 400;
+				DEVELOPMENT_TEAM = TEK8D3YVA4;
+				DRIVERKIT_DEPLOYMENT_TARGET = 21.0;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				INFOPLIST_FILE = NumarkNS7Driver/Info.plist;
+				INSTALL_PATH = /Applications/NumarkNS7Installer.app/Contents/Library/SystemExtensions;
+				MARKETING_VERSION = 4.0.0;
+				MACOSX_DEPLOYMENT_TARGET = 12.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.numark.ns7.driverkit;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = driverkit;
+				SKIP_INSTALL = NO;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		A1B2C3J002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ARCHS = arm64;
+				CODE_SIGN_ENTITLEMENTS = NumarkNS7Driver/NumarkNS7Driver.entitlements;
+				CODE_SIGN_IDENTITY = "Developer ID Application";
+				CODE_SIGN_STYLE = Manual;
+				CURRENT_PROJECT_VERSION = 400;
+				DEVELOPMENT_TEAM = TEK8D3YVA4;
+				DRIVERKIT_DEPLOYMENT_TARGET = 21.0;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GCC_OPTIMIZATION_LEVEL = s;
+				INFOPLIST_FILE = NumarkNS7Driver/Info.plist;
+				INSTALL_PATH = /Applications/NumarkNS7Installer.app/Contents/Library/SystemExtensions;
+				MARKETING_VERSION = 4.0.0;
+				MACOSX_DEPLOYMENT_TARGET = 12.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.numark.ns7.driverkit;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = driverkit;
+				SKIP_INSTALL = NO;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		A1B2C3J003 /* Debug (Project) */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ARCHS = arm64;
+				CLANG_CXX_LANGUAGE_STANDARD = "c++17";
+				CLANG_CXX_LIBRARY = "libc++";
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				GCC_DYNAMIC_NO_PIC = NO;
+				MACOSX_DEPLOYMENT_TARGET = 12.0;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = driverkit;
+			};
+			name = Debug;
+		};
+		A1B2C3J004 /* Release (Project) */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ARCHS = arm64;
+				CLANG_CXX_LANGUAGE_STANDARD = "c++17";
+				CLANG_CXX_LIBRARY = "libc++";
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				MACOSX_DEPLOYMENT_TARGET = 12.0;
+				ONLY_ACTIVE_ARCH = NO;
+				SDKROOT = driverkit;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		A1B2C3G001 /* Build configuration list for PBXNativeTarget "NumarkNS7Driver" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A1B2C3J001 /* Debug */,
+				A1B2C3J002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A1B2C3G002 /* Build configuration list for PBXProject "NumarkNS7Driver" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A1B2C3J003 /* Debug */,
+				A1B2C3J004 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+	};
+	rootObject = A1B2C3I001 /* Project object */;
+}
