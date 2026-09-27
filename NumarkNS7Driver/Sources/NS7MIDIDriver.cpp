@@ -224,13 +224,21 @@ IMPL(NS7MIDIDriver, Stop)
     return Stop(provider, SUPERDISPATCH);
 }
 
+// IOUserMIDIDriver::StartIO/StopIO are empty stubs in MIDIDriverKit; the
+// framework never calls IOUserMIDIDevice::StartIO itself. The device's
+// StartIO is what maps its IO buffers (IOMemoryMap for input and output) and
+// marks it running. MIDIServer's next call, RegisterIOThread, reads those maps
+// via IOUserMIDIDevice::_GetIOBuffer, so without the device StartIO here the
+// maps are null and the dext crashes in IOMemoryMap::GetAddress().
 kern_return_t
 NS7MIDIDriver::StartIO(OSArray * deviceList)
 {
     // Reset SysEx framing state for a new I/O session (the destination IO
     // block is not expected to run before StartIO).
     ivars->midiOutState = {};
-    const kern_return_t ret = super::StartIO(deviceList);
+    kern_return_t ret = super::StartIO(deviceList);
+    if (ret == kIOReturnSuccess && ivars->deviceAdded && !ivars->device->GetDeviceIsRunning())
+        ret = ivars->device->StartIO();
     Log("StartIO: 0x%08x", ret);
     return ret;
 }
@@ -238,8 +246,14 @@ NS7MIDIDriver::StartIO(OSArray * deviceList)
 kern_return_t
 NS7MIDIDriver::StopIO()
 {
-    Log("StopIO");
-    return super::StopIO();
+    // The framework stops a running device itself only on user-client
+    // disconnect or RemoveObject; a normal StopIO needs it done here.
+    kern_return_t ret = kIOReturnSuccess;
+    if (ivars->deviceAdded && ivars->device->GetDeviceIsRunning())
+        ret = ivars->device->StopIO();
+    Log("StopIO: 0x%08x", ret);
+    const kern_return_t superRet = super::StopIO();
+    return ret != kIOReturnSuccess ? ret : superRet;
 }
 
 void

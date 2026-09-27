@@ -22,3 +22,6 @@ xcuserdata/
 
 # Claude
 .claude/
+
+# Reverse-engineering scratch
+.re/
