@@ -759,8 +759,8 @@ static void test_queue_ump_dropped_sysex_start_drops_rest()
     CHECK_EQ(QueueUmpAsRawMidi(ump, 6, f, st), 3u);   // all three pieces dropped
     CHECK_EQ(f.Size(), 4u);                            // no orphan bytes queued
 
-    const uint32_t noteOff[] = { 0x20903C7Fu };
-    CHECK_EQ(QueueUmpAsRawMidi(noteOff, 1, f, st), 0u);   // unrelated message still queues fine
+    const uint32_t noteOn[] = { 0x20903C7Fu };
+    CHECK_EQ(QueueUmpAsRawMidi(noteOn, 1, f, st), 0u);   // unrelated message still queues fine
     CHECK_EQ(f.Size(), 7u);
 }
 
@@ -829,6 +829,72 @@ static void test_queue_ump_orphan_empty_end_dropped()
     UmpOutState st = {};
     CHECK_EQ(QueueUmpAsRawMidi(kSysExEmptyEnd, 2, f, st), 1u);
     CHECK_EQ(f.Size(), 0u);
+}
+
+// A channel/system-common message arriving while a SysEx is still open must
+// close it out (F7) before going through itself; later pieces of that SysEx
+// then become orphans.
+static void test_queue_ump_channel_message_closes_open_sysex()
+{
+    ByteFifo<64> f;
+    UmpOutState st = {};
+    uint32_t ump[7];
+    memcpy(ump,     kSysExStart, sizeof kSysExStart);
+    const uint32_t noteOn[] = { 0x20903C7Fu };
+    memcpy(ump + 2, noteOn, sizeof noteOn);
+    memcpy(ump + 3, kSysExContinue, sizeof kSysExContinue);
+    memcpy(ump + 5, kSysExEnd, sizeof kSysExEnd);
+    CHECK_EQ(QueueUmpAsRawMidi(ump, 7, f, st), 2u);   // continue and end are orphans
+    uint8_t out[16] = {};
+    CHECK_EQ(f.Read(out, sizeof out), 11u);
+    const uint8_t expect[11] = { 0xF0, 1,2,3,4,5,6, 0xF7, 0x90,0x3C,0x7F };
+    CHECK(memcmp(out, expect, 11) == 0);
+}
+
+// Real-time bytes (F8-FF) inside an open SysEx pass straight through without
+// touching sysExOpen, unlike a channel/system-common message.
+static void test_queue_ump_realtime_inside_sysex_passes_through()
+{
+    ByteFifo<64> f;
+    UmpOutState st = {};
+    uint32_t ump[5];
+    memcpy(ump,     kSysExStart, sizeof kSysExStart);
+    const uint32_t timingClock[] = { 0x10F80000u };   // type 1, real-time 0xF8
+    memcpy(ump + 2, timingClock, sizeof timingClock);
+    memcpy(ump + 3, kSysExEnd, sizeof kSysExEnd);
+    CHECK_EQ(QueueUmpAsRawMidi(ump, 5, f, st), 0u);
+    uint8_t out[16] = {};
+    CHECK_EQ(f.Read(out, sizeof out), 11u);
+    const uint8_t expect[11] = { 0xF0, 1,2,3,4,5,6, 0xF8, 0xD,0xE, 0xF7 };
+    CHECK(memcmp(out, expect, 11) == 0);
+}
+
+static void test_queue_ump_pending_f7_flushed_when_room()
+{
+    ByteFifo<8> f;
+    UmpOutState st = {};
+    const uint8_t filler[1] = { 0xAA };
+    CHECK(f.Write(filler, 1));   // 7 bytes free: exactly the start's size
+
+    CHECK_EQ(QueueUmpAsRawMidi(kSysExStart, 2, f, st), 0u);
+    CHECK_EQ(f.Size(), 8u);      // FIFO now completely full
+
+    // The continue doesn't fit, and neither does the immediate F7 retry.
+    CHECK_EQ(QueueUmpAsRawMidi(kSysExContinue, 2, f, st), 1u);
+    CHECK_EQ(f.Size(), 8u);
+
+    const uint32_t noteOn[] = { 0x20903C7Fu };
+    CHECK_EQ(QueueUmpAsRawMidi(noteOn, 1, f, st), 1u);   // still full: dropped, order preserved
+    CHECK_EQ(f.Size(), 8u);
+
+    uint8_t drain[8] = {};
+    CHECK_EQ(f.Read(drain, sizeof drain), 8u);   // free up room
+
+    CHECK_EQ(QueueUmpAsRawMidi(noteOn, 1, f, st), 0u);   // pending F7 flushes, then the note-on queues
+    uint8_t out[8] = {};
+    CHECK_EQ(f.Read(out, sizeof out), 4u);
+    const uint8_t expect[4] = { 0xF7, 0x90, 0x3C, 0x7F };
+    CHECK(memcmp(out, expect, 4) == 0);
 }
 
 static void test_next_packet_takes_at_most_39_bytes()
@@ -939,6 +1005,9 @@ int main()
         T(test_queue_ump_trailing_partial_ump_ignored),
         T(test_queue_ump_empty_sysex_end_closes),
         T(test_queue_ump_orphan_empty_end_dropped),
+        T(test_queue_ump_channel_message_closes_open_sysex),
+        T(test_queue_ump_realtime_inside_sysex_passes_through),
+        T(test_queue_ump_pending_f7_flushed_when_room),
         T(test_next_packet_takes_at_most_39_bytes),
         T(test_next_packet_empty_fifo_returns_zero),
 #undef T

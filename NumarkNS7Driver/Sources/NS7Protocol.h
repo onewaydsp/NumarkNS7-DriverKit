@@ -426,20 +426,23 @@ typedef ByteFifo<kMidiOutFifoBytes> MidiOutFifo;
 
 // Per-destination state for QueueUmpAsRawMidi, kept across calls because
 // CoreMIDI may split one SysEx across IO-block invocations. Valid when zero.
+// Reset it whenever the destination's FIFO is reset or streaming restarts;
+// one state per destination assumes a single UMP group.
 struct UmpOutState {
-    bool sysExOpen;     // a SysEx start reached the FIFO and its end has not
-    bool pendingF7;     // a SysEx was cut short; F7 must be queued before anything else
+    bool sysExOpen;     // a SysEx start reached the FIFO and its end has not yet reached it.
+    bool pendingF7;     // a SysEx was cut short; F7 must be queued before the next message, once there is room
 };
 
 // Converts UMP messages to raw MIDI 1.0 bytes and queues each message whole.
-// Types other than 1, 2 and 3 are skipped. Returns how many 64-bit UMP packets
-// were dropped because the FIFO had no room (a SysEx counts per packet, not
-// per whole message); a trailing partial UMP (too few words for its type) is
+// Types other than 1, 2 and 3 are skipped. Returns how many UMP packets were
+// dropped because the FIFO had no room (a SysEx counts per packet, not per
+// whole message); a trailing partial UMP (too few words for its type) is
 // ignored and not counted. Dropping a SysEx start drops the rest of that
 // SysEx too, so no orphan data bytes reach the device; a SysEx cut short
-// part-way through is terminated with F7 as soon as room allows, so the
-// device is never left waiting inside a SysEx. Real-time safe: no locks, no
-// allocation.
+// part-way through, or interrupted by another message, is terminated with
+// F7 as soon as room allows, so the device is never left waiting inside a
+// SysEx. Real-time bytes (0xF8-0xFF) pass through a SysEx untouched. Real-
+// time safe: no locks, no allocation.
 template <uint32_t N>
 inline uint32_t QueueUmpAsRawMidi(const uint32_t * words, size_t count, ByteFifo<N> & fifo,
                                   UmpOutState & state)
@@ -464,7 +467,21 @@ inline uint32_t QueueUmpAsRawMidi(const uint32_t * words, size_t count, ByteFifo
         const bool isEnd         = bytes[n - 1] == 0xF7;
 
         if (!isSysExPiece) {
-            if (!x->fifo->Write(bytes, uint32_t(n))) x->dropped++;
+            // A channel/system-common message (not real-time) interleaved
+            // with an open SysEx must close it first; real-time bytes
+            // (0xF8-0xFF) pass through without disturbing sysExOpen.
+            if (st.sysExOpen && bytes[0] < 0xF8) {
+                uint8_t withTerminator[9];
+                withTerminator[0] = 0xF7;
+                memcpy(withTerminator + 1, bytes, n);
+                st.sysExOpen = false;
+                if (!x->fifo->Write(withTerminator, uint32_t(n + 1))) {
+                    x->dropped++;
+                    st.pendingF7 = true;
+                }
+            } else {
+                if (!x->fifo->Write(bytes, uint32_t(n))) x->dropped++;
+            }
             return;
         }
 
@@ -473,6 +490,7 @@ inline uint32_t QueueUmpAsRawMidi(const uint32_t * words, size_t count, ByteFifo
                 st.sysExOpen = !isEnd;
             } else {
                 x->dropped++;
+                if (st.sysExOpen) st.pendingF7 = true;   // terminate the still-open older SysEx
                 st.sysExOpen = false;
             }
             return;
