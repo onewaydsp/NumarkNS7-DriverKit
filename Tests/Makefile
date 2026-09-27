@@ -5,7 +5,7 @@ SRC_DIR  := ../NumarkNS7Driver/Sources
 BUILD    := build
 
 SOURCES  := $(sort $(wildcard *.cpp))
-HEADERS  := TestHarness.h TestFixtures.h $(SRC_DIR)/NS7Protocol.h
+HEADERS  := TestHarness.h TestFixtures.h $(SRC_DIR)/NS7Protocol.h Makefile
 PROTO    := $(SRC_DIR)/NS7Protocol.h
 
 # Coverage (restricted to NS7Protocol.h) via LLVM source-based coverage.
@@ -13,7 +13,7 @@ PROFDATA ?= xcrun llvm-profdata
 LLVMCOV  ?= xcrun llvm-cov
 COVBIN   := $(BUILD)/NS7ProtocolTests-cov
 
-.PHONY: test coverage coverage-show clean
+.PHONY: test tsan coverage coverage-show clean
 
 # Default: the whole suite under AddressSanitizer + UndefinedBehaviorSanitizer.
 test: $(BUILD)/NS7ProtocolTests
@@ -22,6 +22,17 @@ test: $(BUILD)/NS7ProtocolTests
 $(BUILD)/NS7ProtocolTests: $(SOURCES) $(HEADERS)
 	@mkdir -p $(BUILD)
 	$(CXX) $(CXXFLAGS) -I$(SRC_DIR) $(SOURCES) -o $@
+
+# The whole suite under ThreadSanitizer (cannot be combined with ASan).
+# Exercises the real two-thread ByteFifo test in FifoConcurrencyTests.cpp.
+# Built at -O0: at -O1 TSan did not report ByteFifo::Write's release store
+# weakened to relaxed; at -O0 it does, with this test.
+tsan: $(BUILD)/NS7ProtocolTests-tsan
+	TSAN_OPTIONS=halt_on_error=1 ./$(BUILD)/NS7ProtocolTests-tsan
+
+$(BUILD)/NS7ProtocolTests-tsan: $(SOURCES) $(HEADERS)
+	@mkdir -p $(BUILD)
+	$(CXX) $(BASEFLAGS) -O0 -fsanitize=thread -I$(SRC_DIR) $(SOURCES) -o $@
 
 # Line/region/branch coverage of NS7Protocol.h: summary table.
 coverage: $(BUILD)/coverage.profdata
