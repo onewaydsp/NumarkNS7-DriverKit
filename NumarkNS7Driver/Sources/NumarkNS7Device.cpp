@@ -56,6 +56,8 @@ constexpr uint32_t kControlTimeoutMs    = 5000;
 constexpr uint64_t kStatsEveryFeedback  = 10000;              // ~10 s
 constexpr uint32_t kLoggedErrorsPerPipe = 5;
 constexpr uint32_t kLoggedMidiPerStats  = 100;                // MIDI lines per stats period
+constexpr uint32_t kMidiOutTimeoutMs    = 1000;
+constexpr uint32_t kMidiOutStallRetries = 3;
 
 struct SlotRef { uint32_t index; };
 
@@ -91,6 +93,9 @@ struct NumarkNS7Device_IVars
     IsoSlot  feedback[kFeedbackInFlight] = {};
     BulkSlot capture[kCaptureInFlight] = {};
     BulkSlot midiIn[kMidiInFlight] = {};
+    BulkSlot midiOut = {};
+    uint32_t midiOutLength = 0;     // MIDI bytes in the packet in flight; 0 = idle
+    uint32_t midiOutRetries = 0;    // resends of the current packet after a STALL
 
     uint64_t playbackFrame = 0;     // next frame for a playback request
     uint64_t feedbackFrame = 0;
@@ -105,6 +110,7 @@ struct NumarkNS7Device_IVars
     uint64_t  feedbackPackets = 0;
     uint64_t  captureBytes = 0;
     uint64_t  midiMessages = 0;
+    uint64_t  midiOutBytes = 0;
     uint32_t  midiLogged = 0;       // reset with each stats line
     IOLock        * midiClientLock = nullptr;
     NS7MIDIDriver * midiClient = nullptr;       // guarded by midiClientLock, retained
@@ -149,6 +155,7 @@ NumarkNS7Device::free()
         ReleaseIsoSlots(ivars->feedback, kFeedbackInFlight);
         ReleaseBulkSlots(ivars->capture, kCaptureInFlight);
         ReleaseBulkSlots(ivars->midiIn, kMidiInFlight);
+        ReleaseBulkSlots(&ivars->midiOut, 1);
         OSSafeReleaseNULL(ivars->control);
         OSSafeReleaseNULL(ivars->midiClient);
         if (ivars->midiClientLock) IOLockFree(ivars->midiClientLock);
@@ -404,11 +411,14 @@ LogStats(NumarkNS7Device_IVars * iv)
 {
     const PipeStats & p = iv->stats[kPipePlayback], & f = iv->stats[kPipeFeedback],
                     & c = iv->stats[kPipeCapture],  & m = iv->stats[kPipeMidiIn];
+    const PipeStats & o = iv->stats[kPipeMidiOut];
     Log("stats: playback %llu (%llu err, %llu resync) | feedback %llu pkts, %d frames/ms "
         "(%llu err, %llu resync) | capture %llu B (%llu err, %llu stall) | "
-        "MIDI %llu xfers, %llu msgs (%llu err, %llu stall)",
+        "MIDI in %llu xfers, %llu msgs (%llu err, %llu stall) | "
+        "MIDI out %llu pkts, %llu B (%llu err, %llu stall)",
         p.done, p.errors, p.resyncs, iv->feedbackPackets, iv->feedbackFrames, f.errors, f.resyncs,
-        iv->captureBytes, c.errors, c.stalls, m.done, iv->midiMessages, m.errors, m.stalls);
+        iv->captureBytes, c.errors, c.stalls, m.done, iv->midiMessages, m.errors, m.stalls,
+        o.done, iv->midiOutBytes, o.errors, o.stalls);
     if (iv->midiLogged > kLoggedMidiPerStats)
         Log("%u MIDI messages not logged", iv->midiLogged - kLoggedMidiPerStats);
     iv->midiLogged = 0;
@@ -425,6 +435,34 @@ CopyMidiClient(NumarkNS7Device_IVars * iv)
     if (client) client->retain();
     IOLockUnlock(iv->midiClientLock);
     return client;
+}
+
+static void
+SendMidiOut(NumarkNS7Device_IVars * iv)
+{
+    kern_return_t ret = iv->pipes[kPipeMidiOut]->AsyncIO(iv->midiOut.buffer, NS7::kMidiPacketBytes,
+                                                        iv->midiOut.action, kMidiOutTimeoutMs);
+    if (ret != kIOReturnSuccess) {
+        NoteError(iv, kPipeMidiOut, ret);
+        iv->midiOutLength = 0;
+    }
+}
+
+// Starts the next EP 0x04 transfer if none is in flight and CoreMIDI has
+// queued bytes. Runs on the USB queue: from FeedbackComplete (~every 4 ms)
+// and from MidiOutComplete (back to back while data remains).
+static void
+PumpMidiOut(NumarkNS7Device_IVars * iv)
+{
+    if (iv->stopping || iv->midiOutLength != 0 || iv->midiOut.action == nullptr) return;
+    NS7MIDIDriver * client = CopyMidiClient(iv);
+    if (client == nullptr) return;
+    const uint32_t n = client->NextMidiOutPacket(iv->midiOut.ptr);
+    client->release();
+    if (n == 0) return;
+    iv->midiOutLength = n;
+    iv->midiOutRetries = 0;
+    SendMidiOut(iv);
 }
 
 // Called by the raw MIDI parser for each complete UMP.
@@ -471,6 +509,10 @@ StartStreaming(NumarkNS7Device * self, NumarkNS7Device_IVars * iv)
             ret = self->CreateActionMidiInComplete(sizeof(SlotRef), &iv->midiIn[i].action);
         if (ret == kIOReturnSuccess) SetSlotIndex(iv->midiIn[i].action, i);
     }
+    if (ret == kIOReturnSuccess)
+        ret = CreateBuffer(if0, NS7::kMidiPacketBytes, &iv->midiOut.buffer, &iv->midiOut.ptr);
+    if (ret == kIOReturnSuccess)
+        ret = self->CreateActionMidiOutComplete(sizeof(SlotRef), &iv->midiOut.action);
     if (ret != kIOReturnSuccess) {
         Log("streaming setup failed: 0x%08x", ret);
         return ret;
@@ -523,6 +565,7 @@ IMPL(NumarkNS7Device, FeedbackComplete)
         if (++iv->feedbackPackets % kStatsEveryFeedback == 0) LogStats(iv);
     }
     SubmitFeedback(iv, SlotIndex(action));
+    PumpMidiOut(iv);
 }
 
 void
@@ -570,6 +613,33 @@ IMPL(NumarkNS7Device, MidiInComplete)
         OSSafeReleaseNULL(iv->midiInClient);
     }
     SubmitBulk(iv, kPipeMidiIn, slot, NS7::kMidiPacketBytes);
+}
+
+void
+IMPL(NumarkNS7Device, MidiOutComplete)
+{
+    NumarkNS7Device_IVars * iv = ivars;
+    (void)action;
+    (void)actualByteCount;
+    (void)completionTimestamp;
+    if (iv->stopping) return;
+
+    if (status == kUSBHostReturnPipeStalled && iv->midiOutRetries < kMidiOutStallRetries) {
+        NoteError(iv, kPipeMidiOut, status);
+        iv->stats[kPipeMidiOut].stalls++;
+        iv->midiOutRetries++;
+        if (iv->pipes[kPipeMidiOut]->ClearStall(true) == kIOReturnSuccess) {
+            SendMidiOut(iv);   // resend the same packet
+            return;
+        }
+    } else if (!TransferOk(status)) {
+        NoteError(iv, kPipeMidiOut, status);
+    } else {
+        iv->stats[kPipeMidiOut].done++;
+        iv->midiOutBytes += iv->midiOutLength;
+    }
+    iv->midiOutLength = 0;
+    PumpMidiOut(iv);
 }
 
 // ── Lifecycle ────────────────────────────────────────────────────────────────
@@ -697,6 +767,7 @@ IMPL(NumarkNS7Device, Stop)
     for (auto & s : ivars->feedback) OSSafeReleaseNULL(s.action);
     for (auto & s : ivars->capture)  OSSafeReleaseNULL(s.action);
     for (auto & s : ivars->midiIn)   OSSafeReleaseNULL(s.action);
+    OSSafeReleaseNULL(ivars->midiOut.action);
 
     for (uint8_t i = 0; i < kNumInterfaces; i++) {
         if (ivars->interfaces[i]) {

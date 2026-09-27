@@ -64,6 +64,9 @@ protected:
     virtual void MidiInComplete(OSAction * action, IOReturn status,
                                 uint32_t actualByteCount, uint64_t completionTimestamp)
         TYPE(IOUSBHostPipe::CompleteAsyncIO);
+    virtual void MidiOutComplete(OSAction * action, IOReturn status,
+                                 uint32_t actualByteCount, uint64_t completionTimestamp)
+        TYPE(IOUSBHostPipe::CompleteAsyncIO);
 };
 
 #endif /* NumarkNS7Device_h */
