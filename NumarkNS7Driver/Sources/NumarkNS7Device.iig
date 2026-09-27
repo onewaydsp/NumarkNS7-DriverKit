@@ -46,9 +46,11 @@ public:
     void SetMidiClient(NS7MIDIDriver * client) LOCALONLY;
 
     // Waits until any block running on this service's default queue (where
-    // MidiInComplete delivers MIDI in) has finished. Call after
-    // SetMidiClient(nullptr) to be sure no delivery is still in flight. Must
-    // not be called from this service's default queue.
+    // MidiInComplete delivers MIDI in and MIDI out is pumped) has finished.
+    // Call after SetMidiClient(nullptr) to be sure no call into the client is
+    // still in flight. Best-effort: if the default queue can't be obtained it
+    // logs and returns without syncing. Must not be called from this
+    // service's default queue.
     void SyncUsbQueue() LOCALONLY;
 
 protected:

@@ -42,6 +42,7 @@ struct NS7MIDIDriver_IVars
     IOUserMIDISource      * source;
     IOUserMIDIDestination * destination;
     bool                    deviceAdded;      // AddObject(device) succeeded
+    bool                    detached;         // __atomic: set in Stop; IO block then ignores output
     uint32_t                midiOutDropped;   // __atomic: messages dropped, FIFO full
     uint32_t                sendErrors;       // USB queue only
     NS7::UmpOutState        midiOutState;     // real-time thread only; SysEx framing across calls
@@ -144,7 +145,10 @@ CreateMidiObjects(NS7MIDIDriver * self, NS7MIDIDriver_IVars * iv)
     }
 
     // CoreMIDI real-time thread: no locks, no allocation, no logging.
+    // Stop sets `detached` before removing the device, so a late call from
+    // CoreMIDI no longer touches the FIFO.
     ret = iv->destination->SetIOBlock(^kern_return_t(const IOUserMIDIUMPWord * words, size_t numWords) {
+        if (__atomic_load_n(&iv->detached, __ATOMIC_ACQUIRE)) return kIOReturnSuccess;
         const uint32_t dropped = NS7::QueueUmpAsRawMidi(words, numWords, iv->midiOut, iv->midiOutState);
         if (dropped) __atomic_fetch_add(&iv->midiOutDropped, dropped, __ATOMIC_RELAXED);
         return kIOReturnSuccess;
@@ -205,8 +209,12 @@ IMPL(NS7MIDIDriver, Stop)
         ivars->provider->SetMidiClient(nullptr);
         ivars->provider->SyncUsbQueue();
     }
+    // SetIOBlock(nullptr) is not documented as allowed, so the IO block is
+    // detached with a flag instead.
+    __atomic_store_n(&ivars->detached, true, __ATOMIC_RELEASE);
     if (ivars->deviceAdded) {
-        RemoveObject(ivars->device);
+        const kern_return_t ret = RemoveObject(ivars->device);
+        if (ret != kIOReturnSuccess) Log("RemoveObject failed: 0x%08x", ret);
         ivars->deviceAdded = false;
     }
     return Stop(provider, SUPERDISPATCH);
