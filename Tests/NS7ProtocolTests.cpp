@@ -471,8 +471,8 @@ static void test_ump_multi_packet_sysex_to_raw()
 
 static void test_ump_other_types_skipped_by_length()
 {
-    // utility (1 word), MIDI 2.0 voice (2 words), 128-bit data (4 words), note on
-    CHECK((FromUmp({ 0x00000000u, 0x40904000u, 0xFFFF0000u,
+    // utility (1 word), MIDI 2.0 per-note controller (2 words), 128-bit data (4 words), note on
+    CHECK((FromUmp({ 0x00000000u, 0x40004000u, 0xFFFF0000u,
                      0x50000000u, 1u, 2u, 3u, 0x2090407Fu })
            == std::vector<uint8_t>{ 0x90, 0x40, 0x7F }));
 }
@@ -480,6 +480,98 @@ static void test_ump_other_types_skipped_by_length()
 static void test_ump_truncated_message_is_not_read_past_end()
 {
     CHECK(FromUmp({ 0x30040102u }).empty());
+}
+
+// ── MIDI 2.0 channel voice (UMP type 4) → MIDI 1.0 ──────────────────────────
+// Default translation from the UMP and MIDI 2.0 Protocol Specification.
+
+typedef std::vector<uint8_t> Bytes;
+
+static void test_ump2_note_on_scales_velocity()
+{
+    CHECK((FromUmp({ 0x40903C00u, 0xFFFF0000u }) == Bytes{ 0x90, 0x3C, 0x7F }));
+    CHECK((FromUmp({ 0x40953C00u, 0x80000000u }) == Bytes{ 0x95, 0x3C, 0x40 }));
+}
+
+static void test_ump2_note_on_tiny_velocity_is_not_note_off()
+{
+    // vel16 0x0100 >> 9 == 0; a MIDI 2.0 note on must stay a note on.
+    CHECK((FromUmp({ 0x40903C00u, 0x01000000u }) == Bytes{ 0x90, 0x3C, 0x01 }));
+    CHECK((FromUmp({ 0x40903C00u, 0x00000000u }) == Bytes{ 0x90, 0x3C, 0x01 }));
+}
+
+static void test_ump2_note_off_scales_velocity()
+{
+    CHECK((FromUmp({ 0x40803C00u, 0x80000000u }) == Bytes{ 0x80, 0x3C, 0x40 }));
+    CHECK((FromUmp({ 0x40803C00u, 0x0000FFFFu }) == Bytes{ 0x80, 0x3C, 0x00 }));   // attribute ignored
+}
+
+static void test_ump2_control_change_scales_value()
+{
+    CHECK((FromUmp({ 0x40B01100u, 0xFE000000u }) == Bytes{ 0xB0, 0x11, 0x7F }));
+    CHECK((FromUmp({ 0x40B01100u, 0x00000000u }) == Bytes{ 0xB0, 0x11, 0x00 }));
+    CHECK((FromUmp({ 0x40B51100u, 0x80000000u }) == Bytes{ 0xB5, 0x11, 0x40 }));
+}
+
+static void test_ump2_poly_and_channel_pressure()
+{
+    CHECK((FromUmp({ 0x40A03C00u, 0x80000000u }) == Bytes{ 0xA0, 0x3C, 0x40 }));
+    CHECK((FromUmp({ 0x40D00000u, 0x80000000u }) == Bytes{ 0xD0, 0x40 }));
+}
+
+static void test_ump2_pitch_bend_takes_top_14_bits()
+{
+    CHECK((FromUmp({ 0x40E00000u, 0x80000000u }) == Bytes{ 0xE0, 0x00, 0x40 }));
+    CHECK((FromUmp({ 0x40E30000u, 0xFFFFFFFFu }) == Bytes{ 0xE3, 0x7F, 0x7F }));
+    CHECK((FromUmp({ 0x40E00000u, 0x00000000u }) == Bytes{ 0xE0, 0x00, 0x00 }));
+}
+
+static void test_ump2_program_change_without_bank()
+{
+    CHECK((FromUmp({ 0x40C00000u, 0x05000A0Bu }) == Bytes{ 0xC0, 0x05 }));
+}
+
+static void test_ump2_program_change_with_bank()
+{
+    CHECK((FromUmp({ 0x40C00001u, 0x05000A0Bu })
+           == Bytes{ 0xB0, 0x00, 0x0A, 0xB0, 0x20, 0x0B, 0xC0, 0x05 }));
+}
+
+static void test_ump2_rpn_becomes_cc_sequence()
+{
+    CHECK((FromUmp({ 0x40200001u, 0x80000000u })
+           == Bytes{ 0xB0,0x65,0x00, 0xB0,0x64,0x01, 0xB0,0x06,0x40, 0xB0,0x26,0x00 }));
+}
+
+static void test_ump2_nrpn_becomes_cc_sequence()
+{
+    CHECK((FromUmp({ 0x40320203u, 0xFFFFFFFFu })
+           == Bytes{ 0xB2,0x63,0x02, 0xB2,0x62,0x03, 0xB2,0x06,0x7F, 0xB2,0x26,0x7F }));
+}
+
+static void test_ump2_emits_one_callback_per_message()
+{
+    struct Count { int calls = 0; size_t last = 0; } c;
+    const uint32_t w[] = { 0x40200001u, 0x80000000u };
+    UmpToRawMidi(w, 2, [](void * ctx, const uint8_t *, size_t n) {
+        auto * x = static_cast<Count *>(ctx); x->calls++; x->last = n;
+    }, &c);
+    CHECK_EQ(c.calls, 1);
+    CHECK_EQ(c.last, size_t(12));
+}
+
+static void test_ump2_untranslatable_statuses_skipped_aligned()
+{
+    // per-note RC, per-note AC, relative RPN, relative NRPN, per-note pitch bend,
+    // per-note management, then a MIDI 2.0 CC that must still convert.
+    CHECK((FromUmp({ 0x40003C01u, 0xFFFFFFFFu,
+                     0x40103C01u, 0xFFFFFFFFu,
+                     0x40400001u, 0xFFFFFFFFu,
+                     0x40500001u, 0xFFFFFFFFu,
+                     0x40603C00u, 0xFFFFFFFFu,
+                     0x40F03C03u, 0xFFFFFFFFu,
+                     0x40B00700u, 0xFE000000u })
+           == Bytes{ 0xB0, 0x07, 0x7F }));
 }
 
 // ── Ring buffer copies ───────────────────────────────────────────────────────
@@ -719,8 +811,8 @@ static void test_queue_ump_skips_unsupported_types()
 {
     ByteFifo<64> f;
     UmpOutState st = {};
-    // MIDI 2.0 note on (type 4, two words), then a MIDI 1.0 note off.
-    const uint32_t ump[] = { 0x40903C00u, 0xFFFF0000u, 0x20803C00u };
+    // MIDI 2.0 per-note management (type 4, two words, no MIDI 1.0 form), then a MIDI 1.0 note off.
+    const uint32_t ump[] = { 0x40F03C00u, 0x00000000u, 0x20803C00u };
     CHECK_EQ(QueueUmpAsRawMidi(ump, 3, f, st), 0u);
     uint8_t out[8] = {};
     CHECK_EQ(f.Read(out, sizeof out), 3u);
@@ -910,6 +1002,51 @@ static void test_queue_ump_pending_f7_flushed_when_room()
     CHECK(memcmp(out, expect, 4) == 0);
 }
 
+static void test_queue_ump2_note_on_as_raw_bytes()
+{
+    ByteFifo<64> f;
+    UmpOutState st = {};
+    const uint32_t ump[] = { 0x40903C00u, 0xFFFF0000u, 0x40B01100u, 0xFE000000u };
+    CHECK_EQ(QueueUmpAsRawMidi(ump, 4, f, st), 0u);
+    uint8_t out[8] = {};
+    CHECK_EQ(f.Read(out, sizeof out), 6u);
+    const uint8_t expect[] = { 0x90, 0x3C, 0x7F, 0xB0, 0x11, 0x7F };
+    CHECK(memcmp(out, expect, 6) == 0);
+}
+
+static void test_queue_ump2_message_closes_open_sysex()
+{
+    ByteFifo<64> f;
+    UmpOutState st = {};
+    uint32_t ump[4];
+    memcpy(ump, kSysExStart, sizeof kSysExStart);
+    const uint32_t cc[] = { 0x40B01100u, 0xFE000000u };
+    memcpy(ump + 2, cc, sizeof cc);
+    CHECK_EQ(QueueUmpAsRawMidi(ump, 4, f, st), 0u);
+    CHECK(!st.sysExOpen);
+    uint8_t out[16] = {};
+    CHECK_EQ(f.Read(out, sizeof out), 11u);
+    const uint8_t expect[11] = { 0xF0, 1,2,3,4,5,6, 0xF7, 0xB0,0x11,0x7F };
+    CHECK(memcmp(out, expect, 11) == 0);
+}
+
+static void test_queue_ump2_rpn_closes_open_sysex()
+{
+    // Longest translation (12 bytes) plus the F7 prefix: 13 bytes in one write.
+    ByteFifo<64> f;
+    UmpOutState st = {};
+    uint32_t ump[4];
+    memcpy(ump, kSysExStart, sizeof kSysExStart);
+    const uint32_t rpn[] = { 0x40200001u, 0x80000000u };
+    memcpy(ump + 2, rpn, sizeof rpn);
+    CHECK_EQ(QueueUmpAsRawMidi(ump, 4, f, st), 0u);
+    uint8_t out[32] = {};
+    CHECK_EQ(f.Read(out, sizeof out), 20u);
+    const uint8_t expect[20] = { 0xF0, 1,2,3,4,5,6, 0xF7,
+                                 0xB0,0x65,0x00, 0xB0,0x64,0x01, 0xB0,0x06,0x40, 0xB0,0x26,0x00 };
+    CHECK(memcmp(out, expect, 20) == 0);
+}
+
 static void test_next_packet_takes_at_most_39_bytes()
 {
     ByteFifo<64> f;
@@ -989,6 +1126,18 @@ int main()
         T(test_ump_multi_packet_sysex_to_raw),
         T(test_ump_other_types_skipped_by_length),
         T(test_ump_truncated_message_is_not_read_past_end),
+        T(test_ump2_note_on_scales_velocity),
+        T(test_ump2_note_on_tiny_velocity_is_not_note_off),
+        T(test_ump2_note_off_scales_velocity),
+        T(test_ump2_control_change_scales_value),
+        T(test_ump2_poly_and_channel_pressure),
+        T(test_ump2_pitch_bend_takes_top_14_bits),
+        T(test_ump2_program_change_without_bank),
+        T(test_ump2_program_change_with_bank),
+        T(test_ump2_rpn_becomes_cc_sequence),
+        T(test_ump2_nrpn_becomes_cc_sequence),
+        T(test_ump2_emits_one_callback_per_message),
+        T(test_ump2_untranslatable_statuses_skipped_aligned),
         T(test_ring_write_wraps),
         T(test_ring_read_wraps_and_clears),
         T(test_zts_boundary_detected_when_crossed),
@@ -1022,6 +1171,9 @@ int main()
         T(test_queue_ump_channel_message_closes_open_sysex),
         T(test_queue_ump_realtime_inside_sysex_passes_through),
         T(test_queue_ump_pending_f7_flushed_when_room),
+        T(test_queue_ump2_note_on_as_raw_bytes),
+        T(test_queue_ump2_message_closes_open_sysex),
+        T(test_queue_ump2_rpn_closes_open_sysex),
         T(test_next_packet_takes_at_most_39_bytes),
         T(test_next_packet_empty_fifo_returns_zero),
 #undef T

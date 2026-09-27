@@ -338,8 +338,65 @@ private:
 
 typedef void (*BytesCallback)(void * ctx, const uint8_t * bytes, size_t count);
 
-// Converts system (type 1), MIDI 1.0 channel voice (type 2) and 7-bit SysEx
-// (type 3) UMPs to raw bytes. Other message types are skipped by length.
+// Longest raw MIDI 1.0 rendering of one UMP message: a MIDI 2.0 RPN/NRPN
+// becomes four 3-byte control changes.
+constexpr size_t kMaxRawBytesPerUmp = 12;
+
+// Translates one MIDI 2.0 channel voice message (UMP type 4) to MIDI 1.0
+// bytes using the default translation of the MIDI Association's UMP and
+// MIDI 2.0 Protocol Specification. Values are scaled down by taking their
+// top bits. Returns the byte count; 0 for messages with no MIDI 1.0 form
+// (per-note controllers, per-note pitch bend, per-note management and
+// relative RPN/NRPN).
+inline size_t Midi2ChannelVoiceToRaw(uint32_t w0, uint32_t w1, uint8_t out[kMaxRawBytesPerUmp])
+{
+    const uint8_t op = (w0 >> 20) & 0xF;
+    const uint8_t ch = (w0 >> 16) & 0xF;
+    const uint8_t b2 = (w0 >> 8) & 0x7F, b3 = w0 & 0x7F;
+    const uint8_t cc = uint8_t(0xB0 | ch);
+    size_t n = 0;
+    auto put3 = [&](uint8_t a, uint8_t b, uint8_t c) { out[n++] = a; out[n++] = b; out[n++] = c; };
+    switch (op) {
+    case 0x8: put3(uint8_t(0x80 | ch), b2, uint8_t(w1 >> 25)); break;              // note off
+    case 0x9: {                                                                    // note on
+        uint8_t vel = uint8_t(w1 >> 25);
+        if (vel == 0) vel = 1;       // velocity 0 would turn a MIDI 2.0 note on into a note off
+        put3(uint8_t(0x90 | ch), b2, vel);
+        break;
+    }
+    case 0xA: put3(uint8_t(0xA0 | ch), b2, uint8_t(w1 >> 25)); break;              // poly pressure
+    case 0xB: put3(cc, b2, uint8_t(w1 >> 25)); break;                              // control change
+    case 0xC:                                                                      // program change
+        if (w0 & 0x01) {                                                           // bank valid
+            put3(cc, 0x00, (w1 >> 8) & 0x7F);
+            put3(cc, 0x20, w1 & 0x7F);
+        }
+        out[n++] = uint8_t(0xC0 | ch);
+        out[n++] = (w1 >> 24) & 0x7F;
+        break;
+    case 0xD: out[n++] = uint8_t(0xD0 | ch); out[n++] = uint8_t(w1 >> 25); break;  // channel pressure
+    case 0xE: {                                                                    // pitch bend
+        const uint32_t v14 = w1 >> 18;
+        put3(uint8_t(0xE0 | ch), v14 & 0x7F, (v14 >> 7) & 0x7F);
+        break;
+    }
+    case 0x2:                                                                      // registered controller (RPN)
+    case 0x3:                                                                      // assignable controller (NRPN)
+        put3(cc, op == 0x2 ? 0x65 : 0x63, b2);
+        put3(cc, op == 0x2 ? 0x64 : 0x62, b3);
+        put3(cc, 0x06, uint8_t(w1 >> 25));
+        put3(cc, 0x26, (w1 >> 18) & 0x7F);
+        break;
+    default: break;
+    }
+    return n;
+}
+
+// Converts system (type 1), MIDI 1.0 channel voice (type 2), 7-bit SysEx
+// (type 3) and MIDI 2.0 channel voice (type 4, translated to MIDI 1.0 by
+// Midi2ChannelVoiceToRaw) UMPs to raw bytes, calling `cb` once per message
+// with its whole rendering. Other message types, and type-4 messages with no
+// MIDI 1.0 form, are skipped by length.
 inline void UmpToRawMidi(const uint32_t * w, size_t count, BytesCallback cb, void * ctx)
 {
     static const uint8_t kWords[16] = { 1,1,1,2,2,4,1,1,2,2,2,3,3,4,4,4 };
@@ -349,7 +406,7 @@ inline void UmpToRawMidi(const uint32_t * w, size_t count, BytesCallback cb, voi
         const size_t   len  = kWords[type];
         if (i + len > count) return;
         const uint8_t status = uint8_t(w0 >> 16), d0 = uint8_t(w0 >> 8), d1 = uint8_t(w0);
-        uint8_t out[8];
+        uint8_t out[kMaxRawBytesPerUmp];
         size_t  n = 0;
         if (type == 0x1 || type == 0x2) {
             out[n++] = status;
@@ -368,6 +425,8 @@ inline void UmpToRawMidi(const uint32_t * w, size_t count, BytesCallback cb, voi
             if (kind == 0 || kind == 1) out[n++] = 0xF0;
             for (uint8_t k = 0; k < nb; k++) out[n++] = b[k] & 0x7F;
             if (kind == 0 || kind == 3) out[n++] = 0xF7;
+        } else if (type == 0x4) {
+            n = Midi2ChannelVoiceToRaw(w0, w[i + 1], out);
         }
         if (n) cb(ctx, out, n);
         i += len;
@@ -441,7 +500,8 @@ struct UmpOutState {
 };
 
 // Converts UMP messages to raw MIDI 1.0 bytes and queues each message whole.
-// Types other than 1, 2 and 3 are skipped. Returns how many UMP packets were
+// Types 1, 2 and 3 pass through; MIDI 2.0 channel voice (type 4) is
+// translated to MIDI 1.0 first; other types are skipped. Returns how many UMP packets were
 // dropped because the FIFO had no room (a SysEx counts per packet, not per
 // whole message); a trailing partial UMP (too few words for its type) is
 // ignored and not counted. Dropping a SysEx start drops the rest of that
@@ -478,7 +538,8 @@ inline uint32_t QueueUmpAsRawMidi(const uint32_t * words, size_t count, ByteFifo
             // with an open SysEx must close it first; real-time bytes
             // (0xF8-0xFF) pass through without disturbing sysExOpen.
             if (st.sysExOpen && bytes[0] < 0xF8) {
-                uint8_t withTerminator[9];
+                uint8_t withTerminator[1 + kMaxRawBytesPerUmp];
+                if (n > kMaxRawBytesPerUmp) { x->dropped++; return; }
                 withTerminator[0] = 0xF7;
                 memcpy(withTerminator + 1, bytes, n);
                 st.sysExOpen = false;
