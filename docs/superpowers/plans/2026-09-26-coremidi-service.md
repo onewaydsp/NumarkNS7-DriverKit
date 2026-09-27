@@ -436,6 +436,7 @@ struct NS7MIDIDriver_IVars
     bool                    running;          // __atomic: set by StartIO/StopIO
     uint32_t                midiOutDropped;   // __atomic: messages dropped, FIFO full
     uint32_t                sendErrors;       // USB queue only
+    NS7::UmpOutState        midiOutState;     // real-time thread only; SysEx framing across calls
     NS7::MidiOutFifo        midiOut;
 };
 
@@ -520,7 +521,7 @@ CreateMidiObjects(NS7MIDIDriver * self, NS7MIDIDriver_IVars * iv)
 
     // CoreMIDI real-time thread: no locks, no allocation, no logging.
     ret = iv->destination->SetIOBlock(^kern_return_t(const IOUserMIDIUMPWord * words, size_t numWords) {
-        const uint32_t dropped = NS7::QueueUmpAsRawMidi(words, numWords, iv->midiOut);
+        const uint32_t dropped = NS7::QueueUmpAsRawMidi(words, numWords, iv->midiOut, iv->midiOutState);
         if (dropped) __atomic_fetch_add(&iv->midiOutDropped, dropped, __ATOMIC_RELAXED);
         return kIOReturnSuccess;
     });

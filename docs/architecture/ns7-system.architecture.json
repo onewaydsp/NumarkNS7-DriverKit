@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Numark NS7 on Apple Silicon — DriverKit architecture",
+    "output": "ns7-system.html",
+    "quality_profile": "showcase",
+    "locale": "en",
+    "views": [
+      { "id": "midi-in", "label": "MIDI in", "focus": ["ns7", "usbhost", "device", "midi", "coremidi", "apps"], "note": "Controls reach DJ software: EP 0x83 bulk packets become UMP and leave through the CoreMIDI source." },
+      { "id": "streaming", "label": "USB streaming engine", "focus": ["ns7", "usbhost", "device"], "note": "The dext keeps iso OUT, feedback, capture and MIDI reads in flight; the NS7 only sends MIDI while audio streams." },
+      { "id": "install", "label": "Install and approval", "focus": ["installer", "sysextd", "device"], "note": "The installer activates the dext; macOS checks its signature and profile, then launches it when the NS7 attaches." },
+      { "id": "planned-audio", "label": "Planned audio", "focus": ["device", "audio", "coreaudio"], "note": "Capture and playback already stream over USB; an AudioDriverKit service will expose them to Core Audio." }
+    ]
+  },
+  "components": [
+    { "id": "ns7", "type": "external", "label": "Numark NS7", "sublabel": "USB 2.0 · 15E4:0071", "pos": [40, 300], "size": [140, 64], "tag": "Ploytec vendor class" },
+    { "id": "usbhost", "type": "cloud", "label": "IOUSBHost", "sublabel": "IF0 + IF1, alt 1", "pos": [260, 300], "size": [140, 64] },
+    { "id": "device", "type": "backend", "label": "NumarkNS7Device", "sublabel": "USB streaming engine", "pos": [480, 300], "size": [150, 64], "tag": "handshake · 5 pipes" },
+    { "id": "midi", "type": "backend", "label": "NS7MIDIDriver", "sublabel": "IOUserMIDIDriver", "pos": [710, 300], "size": [150, 64] },
+    { "id": "coremidi", "type": "messagebus", "label": "CoreMIDI", "sublabel": "MIDIServer", "pos": [940, 300], "size": [140, 64] },
+    { "id": "apps", "type": "frontend", "label": "DJ software", "sublabel": "Serato · Mixxx · any app", "pos": [1160, 300], "size": [150, 64] },
+    { "id": "installer", "type": "frontend", "label": "NS7 Installer.app", "sublabel": "OSSystemExtensionRequest", "pos": [260, 110], "size": [150, 64] },
+    { "id": "sysextd", "type": "security", "label": "sysextd + AMFI", "sublabel": "approval · signature", "pos": [480, 110], "size": [150, 64], "tag": "dev profile" },
+    { "id": "audio", "type": "backend", "label": "Audio service", "sublabel": "AudioDriverKit", "pos": [710, 480], "size": [150, 64], "tag": "planned" },
+    { "id": "coreaudio", "type": "cloud", "label": "Core Audio", "sublabel": "4 in / 4 out · 44.1 kHz", "pos": [940, 480], "size": [150, 64], "tag": "planned" }
+  ],
+  "boundaries": [
+    { "kind": "security-group", "label": "Driver extension process · com.andrewabner.ns7.driverkit", "wraps": ["device", "midi", "audio"] }
+  ],
+  "connections": [
+    { "id": "usb-wire", "from": "ns7", "to": "usbhost", "label": "5 endpoints", "variant": "emphasis" },
+    { "id": "usb-io", "from": "usbhost", "to": "device", "label": "IsochIO / AsyncIO", "variant": "emphasis", "labelDy": 56 },
+    { "id": "ump-handoff", "from": "device", "to": "midi", "label": "UMP ⇄ packets", "variant": "emphasis" },
+    { "id": "midi-endpoints", "from": "midi", "to": "coremidi", "label": "source + dest" },
+    { "id": "to-apps", "from": "coremidi", "to": "apps", "label": "MIDI 1.0" },
+    { "id": "activate", "from": "installer", "to": "sysextd", "label": "activate" },
+    { "id": "launch", "from": "sysextd", "to": "device", "label": "launch dext", "variant": "security", "fromSide": "bottom", "toSide": "top", "labelDy": 24 },
+    { "id": "audio-streams", "from": "device", "to": "audio", "label": "capture · playback", "variant": "dashed", "fromSide": "bottom", "toSide": "left" },
+    { "id": "audio-device", "from": "audio", "to": "coreaudio", "label": "HAL device", "variant": "dashed" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "USB protocol", "items": ["Vendor-specific (Ploytec), not USB Audio/MIDI class", "iso OUT 0x02 · feedback 0x81 · capture 0x86", "MIDI: bulk 0x83 in / 0x04 out, 42-byte packets"] },
+    { "dot": "emerald", "title": "Verified on hardware", "items": ["Handshake: clock, 44.1 kHz, reg0 stream enable", "Zero errors across all pipes under load", "MIDI flows only while audio streams"] },
+    { "dot": "amber", "title": "Status", "items": ["USB engine: done", "CoreMIDI service: in progress", "Core Audio device: planned"] }
+  ]
+}

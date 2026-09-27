@@ -1,348 +1,213 @@
-# Numark NS7 — Apple Silicon Driver (DriverKit)
-**Version 4.0.0 — arm64 / Apple Silicon**
+# Numark NS7 — Apple Silicon driver (DriverKit)
 
-A complete rewrite of the Numark NS7 USB Audio+MIDI driver using Apple's modern
-DriverKit framework. Replaces the original x86-only Ploytec kext (v3.3.11, 2016)
-which is incompatible with Apple Silicon and macOS 12+.
+A modern macOS driver for the **Numark NS7** DJ controller, written as a user-space
+**DriverKit system extension**. Numark's original driver (a 2016 Ploytec kernel extension,
+v3.3.11) is x86-only and does not load on Apple Silicon; this project replaces it with a
+driver built from the NS7's real USB protocol, verified on hardware.
 
----
+| Component | Status |
+|---|---|
+| USB streaming engine (handshake, iso playback, rate feedback, capture, MIDI in/out pipes) | ✅ Working on hardware, zero errors under load |
+| CoreMIDI device (controls → DJ software, LEDs ← software) | 🚧 In progress — [plan](docs/superpowers/plans/2026-09-26-coremidi-service.md) |
+| Core Audio device (4 in / 4 out, 24-bit, 44.1 kHz) | 📋 Planned (AudioDriverKit) |
 
-## What This Is
-
-The original driver (`Numark-NS7_3.3.11.dmg`) contains a 32-bit x86 kernel extension
-built by Ploytec GmbH in 2016 for macOS 10.12 Sierra. It **cannot run on Apple Silicon** for two reasons:
-
-1. **Wrong architecture** — The Mach-O binary is `x86 32-bit`. Rosetta 2 does not translate kernel extensions.
-2. **Deprecated technology** — Apple deprecated third-party kexts on macOS 11+. Apple Silicon Macs only support DriverKit system extensions for custom USB drivers.
-
-This project provides a fully-structured DriverKit replacement that:
-
-- Matches the same USB device (`VID=0x15E4, PID=0x0071`)
-- Provides 4-channel, 24-bit, 44100 Hz USB audio (Deck A + Deck B)
-- Exposes the MIDI port `Numark NS7 MIDI` to CoreMIDI
-- Runs entirely in **userspace** — no kernel code, no reboots to install
+> **Status:** not yet usable in DJ software. The driver loads, claims the NS7 and streams,
+> and MIDI from the controller reaches the driver — publishing it to CoreMIDI is the
+> work in progress. Serato will most likely also need the audio device.
 
 ---
 
-## Quick Start
+## System architecture
 
-```bash
-# 1. Open in Xcode
-open NumarkNS7Driver.xcodeproj
+<a href="https://onewaydsp.github.io/NumarkNS7-DriverKit/architecture/ns7-system.html">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/architecture/ns7-system-dark.png">
+    <img alt="NS7 DriverKit architecture: Numark NS7 → IOUSBHost → NumarkNS7Device → NS7MIDIDriver → CoreMIDI → DJ software; installer and sysextd launch the dext; a planned AudioDriverKit service exposes capture and playback to Core Audio" src="docs/architecture/ns7-system-light.png">
+  </picture>
+</a>
 
-# 2. Set your Apple Developer Team in Signing & Capabilities
+**[▶ Open the interactive diagram](https://onewaydsp.github.io/NumarkNS7-DriverKit/architecture/ns7-system.html)** —
+pan and zoom, trace relationships, step through guided views (MIDI in, USB streaming,
+install & approval, planned audio), switch light/dark, and export PNG/SVG.
+(GitHub can't run interactive HTML inside a README, so the image above links to the live
+version on GitHub Pages; the source is [`ns7-system.html`](docs/architecture/ns7-system.html).)
 
-# 3. Build
-xcodebuild -project NumarkNS7Driver.xcodeproj \
-           -target NumarkNS7Driver \
-           -configuration Release
+The diagram is generated with [Archify](https://github.com/tt-a1i/archify) from
+[`docs/architecture/ns7-system.architecture.json`](docs/architecture/ns7-system.architecture.json);
+see [Regenerating the diagram](#regenerating-the-diagram).
 
-# 4. Install
-bash installer-scripts/install.sh
+---
 
-# 5. Approve in System Settings → Privacy & Security (if prompted)
+## How the NS7 actually talks to a Mac
+
+The NS7 is **not** a USB Audio Class or USB MIDI Class device (an early assumption in this
+project that turned out to be wrong). Both interfaces are vendor-specific (class `0xFF`) and use
+Ploytec's proprietary "bulk-in / isochronous-out" protocol. Everything below was read from a
+physical NS7 and cross-checked against the original driver.
+
+| Interface (alt 1) | Endpoint | Type | Role |
+|---|---|---|---|
+| IF0 | `0x02` | isochronous OUT, 156 B/microframe | Playback: 24-bit LE PCM, 4 ch, 5–6 frames per 125 µs |
+| IF0 | `0x83` | bulk IN, 512 B | MIDI from the controller (42-byte packets, raw MIDI 1.0) |
+| IF0 | `0x04` | bulk OUT, 512 B | MIDI to the controller (≤ 39 bytes + `0xFD` fill + `0xE0`) |
+| IF1 | `0x81` | isochronous IN, 64 B / 1 ms | Rate feedback: byte 0 = frames this ms (44 / 45) |
+| IF1 | `0x86` | bulk IN, 512 B | Capture: bit-sliced 64-byte frames, 8 per packet |
+
+Startup handshake (replayed from the original kext): firmware info (`C0 56`), register 0 read
+and internal-clock select (`C0/40 49`), `SET_CUR` 44 100 Hz on EP `0x86` and `0x02`, then the
+stream-enable bits in register 0.
+
+Two hardware facts shape the driver design:
+
+- **The NS7 only sends MIDI while audio is streaming.** The driver therefore runs the audio pipes
+  (silence when no app is playing) as soon as the device attaches.
+- **If the host stops servicing the rate-feedback endpoint, the device stalls its bulk IN
+  endpoints.** The driver keeps 8 feedback requests in flight, reschedules late isochronous
+  requests, and clears/requeues stalled pipes.
+
+The full bring-up story, with byte-level evidence, is in the [session log](docs/README.md).
+
+---
+
+## Repository layout
+
+```
+NumarkNS7Driver/                 DriverKit extension (dext)
+  Sources/NumarkNS7Device.iig/.cpp   USB engine: claim, handshake, streaming, MIDI parsing
+  Sources/NS7Protocol.h              Header-only protocol library (no DriverKit types)
+  Info.plist, *.entitlements
+NumarkNS7Installer/              SwiftUI app that activates/deactivates the dext
+Tests/                           Host unit tests for NS7Protocol.h (ASan + UBSan)
+Tools/ns7probe/                  IOUSBHost bring-up tool used to prove the protocol on hardware
+docs/
+  README.md                      Session log: how the protocol was verified and the driver built
+  architecture/                  Archify diagram source, interactive HTML, README images
+  superpowers/specs/, plans/     Design spec and implementation plan for the CoreMIDI service
+  USB_ANALYSIS.md                Original analysis (partly superseded — see session log)
+installer-scripts/               Command-line install/uninstall helpers
 ```
 
 ---
 
 ## Requirements
 
-| Requirement | Details |
+| | |
 |---|---|
-| **Mac** | Apple Silicon — M1, M1 Pro, M1 Max, M1 Ultra, M2, M3, M4 series |
-| **macOS** | 12.0 Monterey or later |
-| **Xcode** | 13.0 or later |
-| **Apple Developer account** | Required for signing + DriverKit USB entitlement |
-| **DriverKit USB entitlement** | Must be requested from Apple (free, see below) |
-
-> **Intel Mac users:** Remove `arm64` from `ARCHS` in the Xcode build settings
-> and add `x86_64`. The driver code is architecture-neutral C++.
+| **Mac** | Apple Silicon |
+| **macOS** | 26 or later (the CoreMIDI service uses MIDIDriverKit, DriverKit 25) |
+| **Xcode** | 26 or later |
+| **Apple Developer Program** | Paid membership — needed to sign a DriverKit extension |
+| **Hardware** | A Numark NS7 (USB `15E4:0071`) for anything beyond unit tests |
 
 ---
 
-## Project Structure
+## Building and installing (development)
 
-```
-NumarkNS7-DriverKit/
-├── NumarkNS7Driver.xcodeproj/          Xcode project
-│   └── project.pbxproj
-├── NumarkNS7Driver/
-│   ├── Info.plist                      USB matching + IOKit personalities
-│   ├── NumarkNS7Driver.entitlements    DriverKit + USB transport entitlements
-│   └── Sources/
-│       ├── NumarkNS7Driver.h           Class declarations
-│       └── NumarkNS7Driver.cpp         Full implementation:
-│                                         NumarkNS7Driver      — USB device lifecycle
-│                                         NumarkNS7AudioEngine — UAC 1.0 ISO streaming
-│                                         NumarkNS7MIDIDriver  — USB MIDI Class bulk
-│                                         NumarkNS7UserClient  — HAL/app IPC
-├── installer-scripts/
-│   ├── install.sh                      Build output installer
-│   └── uninstall.sh                    Clean removal
-└── docs/
-    └── USB_ANALYSIS.md                 Full analysis of original kext
-```
+1. **Sign in** to Xcode with your Apple Developer account (Settings → Accounts) and accept any
+   pending Program License Agreement at [developer.apple.com/account](https://developer.apple.com/account).
+2. **Set your team** on both targets (`NumarkNS7Driver`, `NumarkNS7Installer`) and change the
+   bundle identifiers (`com.andrewabner.ns7`, `com.andrewabner.ns7.driverkit`) to your own prefix;
+   the installer references the dext identifier in `NumarkNS7InstallerApp.swift`.
+3. **Build** the installer (it embeds the dext):
+   ```bash
+   xcodebuild -scheme NumarkNS7Installer -configuration Debug \
+     -allowProvisioningUpdates -allowProvisioningDeviceRegistration build
+   ```
+4. **Install:** copy `NumarkNS7Installer.app` to `/Applications` (remove any old copy first —
+   copying over it can leave a stale dext inside the bundle), open it, click **Install Driver**,
+   and approve it in **System Settings → General → Login Items & Extensions → Driver Extensions**.
+5. **Replug the NS7.** Matching happens at attach time; if the NS7 was connected before the
+   driver was enabled, Apple's generic composite driver keeps it.
+6. **Watch it run:**
+   ```bash
+   /usr/bin/log stream --predicate 'eventMessage CONTAINS "NumarkNS7"'
+   ```
+   Expect `handshake done`, `streaming: …`, and a `stats:` line every ~10 s with zero errors.
 
----
+### Signing notes (learned the hard way)
 
-## USB Device Information
-
-Extracted directly from the original kext `Info.plist` by parsing the `.dmg → HFS+ → XAR pkg → cpio` chain:
-
-```
-Vendor  ID  : 0x15E4  (5604)   — Ploytec GmbH / Numark
-Product ID  : 0x0071  (113)    — Numark NS7
-MIDI Ports  : 1 port named "MIDI"
-Init wait   : 200 ms after enumeration
-Audio IN    : Endpoint 0x81, 4ch, 24-bit, 44100 Hz, isochronous
-Audio OUT   : Endpoint 0x01, 4ch, 24-bit, 44100 Hz, isochronous
-MIDI        : Endpoint 0x08, bulk
-```
-
-See `docs/USB_ANALYSIS.md` for the complete decoded blob analysis.
-
----
-
-## Requesting the DriverKit USB Entitlement
-
-DriverKit USB drivers require explicit approval from Apple before they will
-load on a production system. The process is free and typically takes 2–5 business days.
-
-1. Go to: https://developer.apple.com/contact/request/driverkit
-2. Select **"USB"** as the transport type
-3. Describe the device: *"Numark NS7 DJ Controller, USB VID 0x15E4 PID 0x0071,
-   USB Audio Class 1.0 + USB MIDI Class. Replacement for deprecated x86 kext
-   from Ploytec GmbH (com.numark.ns7.usb v3.3.11) which does not run on Apple Silicon."*
-4. Apple will add the entitlement to your Developer account
-5. Re-download your provisioning profile in Xcode
-
-**For testing without the entitlement** (Development only):
-```bash
-# Disable SIP temporarily (not for production use)
-# Reboot into Recovery Mode → Utilities → Terminal:
-csrutil disable
-# After testing, re-enable:
-csrutil enable
-```
-
----
-
-## System Architecture
-
-```mermaid
-flowchart TB
-    subgraph HW["Hardware"]
-        NS7["Numark NS7<br/>USB 2.0 Device<br/>VID 0x15E4 / PID 0x0071"]
-    end
-
-    subgraph KERNEL["macOS Kernel (xnu)"]
-        IOUSB["IOUSBHostFamily<br/>USB enumeration & transport"]
-    end
-
-    subgraph DEXT["NumarkNS7Driver.dext (userspace System Extension)"]
-        direction TB
-        Root["NumarkNS7Driver<br/>USB device lifecycle<br/>Start / Stop / matching"]
-        Audio["NumarkNS7AudioEngine<br/>UAC 1.0 isochronous<br/>IN 0x81 / OUT 0x01<br/>4ch · 24-bit · 44.1 kHz"]
-        MIDI["NumarkNS7MIDIDriver<br/>USB MIDI Class bulk<br/>EP 0x08"]
-        UC["NumarkNS7UserClient<br/>IPC to host apps"]
-        Root --> Audio
-        Root --> MIDI
-        Root --> UC
-    end
-
-    subgraph FRAMEWORKS["DriverKit Frameworks"]
-        ADK["AudioDriverKit<br/>IOUserAudioDevice / Stream"]
-        MDK["MIDIDriverKit"]
-        DK["DriverKit + USBDriverKit"]
-    end
-
-    subgraph SYSSVCS["System Services"]
-        CoreAudio["CoreAudio HAL<br/>&quot;Numark NS7&quot;"]
-        CoreMIDI["CoreMIDI<br/>&quot;Numark NS7 MIDI&quot;"]
-    end
-
-    subgraph APPS["User Applications"]
-        Serato["Serato DJ / Traktor / etc."]
-        Logic["Logic / Ableton / DAWs"]
-    end
-
-    NS7 <-->|"USB 2.0"| IOUSB
-    IOUSB <-->|"IOUSBHostDevice<br/>matching"| Root
-    Audio -->|"register device"| ADK
-    MIDI -->|"register port"| MDK
-    Root -.->|"DriverKit runtime"| DK
-    ADK --> CoreAudio
-    MDK --> CoreMIDI
-    CoreAudio --> Serato
-    CoreAudio --> Logic
-    CoreMIDI --> Serato
-    UC <-.->|"IOUserClient IPC"| Serato
-
-    classDef hw fill:#2d3748,stroke:#4a5568,color:#fff
-    classDef kernel fill:#742a2a,stroke:#c53030,color:#fff
-    classDef dext fill:#1a365d,stroke:#3182ce,color:#fff
-    classDef fw fill:#22543d,stroke:#38a169,color:#fff
-    classDef sys fill:#553c9a,stroke:#805ad5,color:#fff
-    classDef app fill:#744210,stroke:#d69e2e,color:#fff
-    class NS7 hw
-    class IOUSB kernel
-    class Root,Audio,MIDI,UC dext
-    class ADK,MDK,DK fw
-    class CoreAudio,CoreMIDI sys
-    class Serato,Logic app
-```
-
-**Data flow at a glance:**
-
-1. **USB enumeration** — macOS detects the NS7; `IOUSBHostFamily` matches it against the `IOKitPersonalities` in `Info.plist` and loads the `.dext` in userspace.
-2. **Interface claim** — `NumarkNS7Driver::Start` opens USB interfaces 1/2 (audio) and 3 (MIDI), then spawns the audio engine and MIDI driver.
-3. **Audio path** — isochronous IN/OUT transfers are ring-buffered, format-converted (24-bit packed LE ↔ 32-bit float), and surfaced to CoreAudio via `AudioDriverKit`.
-4. **MIDI path** — bulk reads on EP 0x08 are parsed as USB MIDI Class packets and dispatched to CoreMIDI via `MIDIDriverKit`.
-5. **Crash isolation** — everything above runs in a sandboxed userspace process. A fault restarts the `.dext`, not the kernel.
-
----
-
-## How It Works
-
-### USB Audio (replaces NumarkNS7Audio.kext + NumarkNS7AudioHAL.plugin)
-
-The NS7 implements **USB Audio Class 1.0** — the same standard used by every
-class-compliant USB audio interface. The `NumarkNS7AudioEngine` class:
-
-1. Opens USB interfaces 1 and 2, alternate setting 1 (activates audio streaming)
-2. Submits a ring of 8 isochronous IN/OUT buffers (576 bytes each @ 44100 Hz)
-3. In the IN completion callback, converts 24-bit packed LE integers → 32-bit float
-4. Registers with CoreAudio's HAL via `AudioDriverKit` as device `"Numark NS7"`
-5. Presents 4 input channels: Deck A L/R, Deck B L/R
-6. Presents 4 output channels: same layout
-
-The sample format conversion is fully implemented in `NumarkNS7Driver.cpp`.
-
-### MIDI (replaces Numark NS7 MIDI Driver.plugin)
-
-The `NumarkNS7MIDIDriver` class:
-
-1. Opens USB interface 3, endpoint 0x08
-2. Runs a continuous bulk read loop
-3. Parses **USB MIDI Class 1.0** 4-byte packets (CIN + 3 MIDI bytes)
-4. Dispatches to CoreMIDI, appearing as `"Numark NS7 MIDI"`
-
----
-
-## What's Different from the Original
-
-| Original kext | This DriverKit driver |
-|---|---|
-| x86 32-bit Mach-O | arm64 (Apple Silicon native) |
-| Runs in kernel | Runs in userspace (crash-safe) |
-| macOS 10.12 only | macOS 12.0+ |
-| Requires reboot to install | No reboot needed |
-| Expired 2017 signing certificate | Current Developer ID certificate |
-| Kernel panic on crash | Process isolation — OS auto-restarts |
-| Sleep/wake latency bug | DriverKit handles re-enumeration automatically |
-| Ploytec proprietary IOKit class | Standard DriverKit + AudioDriverKit APIs |
-
----
-
-## Building from Source
-
-```bash
-# Debug build (arm64)
-xcodebuild -project NumarkNS7Driver.xcodeproj \
-           -target NumarkNS7Driver \
-           -configuration Debug \
-           ONLY_ACTIVE_ARCH=YES
-
-# Release build (arm64)
-xcodebuild -project NumarkNS7Driver.xcodeproj \
-           -target NumarkNS7Driver \
-           -configuration Release
-
-# Universal binary (arm64 + x86_64) — if you want Intel support too
-xcodebuild -project NumarkNS7Driver.xcodeproj \
-           -target NumarkNS7Driver \
-           -configuration Release \
-           ARCHS="arm64 x86_64"
-```
-
-The output is `NumarkNS7Driver.dext` — a **Driver Extension** bundle (not a `.kext`).
+- Development provisioning profiles grant `com.apple.developer.driverkit.transport.usb` with
+  `idVendor = "*"`, and Xcode requires the entitlement to match exactly — so the entitlements
+  file uses `"*"`. `Info.plist` still limits matching to the NS7. Distributing the driver to
+  other people requires Apple to grant your team the NS7's vendor ID (`5604`).
+- If the dext is rejected at launch with **AMFI "No matching profile found"**, the DriverKit
+  profile predates your Mac's registration: delete it from
+  `~/Library/Developer/Xcode/UserData/Provisioning Profiles/`, rebuild with
+  `-allowProvisioningUpdates`, and bump `CURRENT_PROJECT_VERSION` so macOS replaces the extension.
+- In zsh, `log` is a shell builtin — use `/usr/bin/log`.
 
 ---
 
 ## Testing
 
-After installation and NS7 connection:
+```bash
+make -C Tests                 # host unit tests for NS7Protocol.h (ASan + UBSan, -Werror)
+make -C Tools/ns7probe        # hardware probe (needs the NS7 and no driver attached)
+./Tools/ns7probe/build/ns7probe init                  # dry run: print every control request
+./Tools/ns7probe/build/ns7probe init 20 --send --stream   # handshake + stream + print MIDI
+```
+
+The probe sends nothing to the device without `--send`, and puts both interfaces back on
+alternate setting 0 when it exits.
+
+---
+
+## Roadmap
+
+1. **CoreMIDI service** — `NS7MIDIDriver` (MIDIDriverKit) publishing device *Numark USB Audio
+   Device*, entity *MIDI*, one source and one destination, named like Numark's original driver;
+   MIDI out through a lock-free FIFO to EP `0x04`. See the
+   [design](docs/superpowers/specs/2026-09-26-coremidi-service-design.md) and
+   [plan](docs/superpowers/plans/2026-09-26-coremidi-service.md).
+2. **Core Audio device** — AudioDriverKit service exposing the capture and playback streams the
+   engine already runs, clocked from the capture stream and the rate feedback.
+3. **DJ software validation** — Serato DJ, Mixxx, and generic CoreMIDI apps.
+4. **Distribution** — Apple's vendor-specific USB entitlement, notarized installer.
+
+---
+
+## Live collaboration sessions
+
+Build this driver with us, live. Open pair-programming sessions run on the schedule below
+(all times US Eastern): we drive [Claude Code](https://claude.com/claude-code) on this repo,
+talk through the protocol, and test on a real NS7 when one is attached. Everyone is welcome —
+no NS7 or Apple Developer account needed to join.
+
+| When (ET) | Join | Add to calendar |
+|---|---|---|
+| **Mondays, 7:00–8:00 pm** | [meet.google.com/avd-uvsw-qcc](https://meet.google.com/avd-uvsw-qcc) | [Google Calendar](https://calendar.google.com/calendar/render?action=TEMPLATE&text=NS7+DriverKit+%E2%80%94+Claude+Code+collaboration+%28Mondays%29&dates=20260928T190000%2F20260928T200000&ctz=America%2FNew_York&recur=RRULE%3AFREQ%3DWEEKLY%3BBYDAY%3DMO&details=Open%2C+live+pair-programming+session+on+the+Numark+NS7+DriverKit+driver%2C+built+with+Claude+Code.%0ARepo%3A+https%3A%2F%2Fgithub.com%2Fonewaydsp%2FNumarkNS7-DriverKit%0AJoin%3A+https%3A%2F%2Fmeet.google.com%2Favd-uvsw-qcc&location=https%3A%2F%2Fmeet.google.com%2Favd-uvsw-qcc) |
+| **Saturdays & Sundays, 4:00–5:00 pm** | [meet.google.com/dmw-qayp-fsx](https://meet.google.com/dmw-qayp-fsx) | [Google Calendar](https://calendar.google.com/calendar/render?action=TEMPLATE&text=NS7+DriverKit+%E2%80%94+Claude+Code+collaboration+%28weekends%29&dates=20260927T160000%2F20260927T170000&ctz=America%2FNew_York&recur=RRULE%3AFREQ%3DWEEKLY%3BBYDAY%3DSA%2CSU&details=Open%2C+live+pair-programming+session+on+the+Numark+NS7+DriverKit+driver%2C+built+with+Claude+Code.%0ARepo%3A+https%3A%2F%2Fgithub.com%2Fonewaydsp%2FNumarkNS7-DriverKit%0AJoin%3A+https%3A%2F%2Fmeet.google.com%2Fdmw-qayp-fsx&location=https%3A%2F%2Fmeet.google.com%2Fdmw-qayp-fsx) |
+
+**How a session works:** the host shares a Claude Code session working on this repository;
+participants suggest prompts and review changes in the call, and anyone can pick up an issue
+and work in their own Claude Code session on a branch, opening a pull request against
+`dext-streaming`. Hardware tests run only on the host's machine.
+
+---
+
+## Regenerating the diagram
 
 ```bash
-# Check extension is loaded
-systemextensionsctl list | grep numark
-
-# Check USB device recognized
-ioreg -r -c IOUSBHostDevice | grep -A5 "0x15E4"
-
-# Check audio device registered
-system_profiler SPAudioDataType | grep -A10 "Numark"
-
-# Check MIDI port registered
-osascript -e 'tell application "Audio MIDI Setup" to get name of every MIDI device'
-# Should include: "Numark NS7 MIDI"
+git clone --depth 1 https://github.com/tt-a1i/archify.git /tmp/archify
+A=/tmp/archify/archify
+node $A/bin/archify.mjs validate architecture docs/architecture/ns7-system.architecture.json --quality showcase --json
+node $A/bin/archify.mjs deliver  architecture docs/architecture/ns7-system.architecture.json docs/architecture/ns7-system.html --quality showcase --json
+node $A/bin/archify.mjs visual-check docs/architecture/ns7-system.html --json   # browser screenshots
 ```
 
----
-
-## Troubleshooting
-
-**"System Extension Blocked" notification**
-→ Open System Settings → Privacy & Security → scroll to Security section → click Allow
-
-**Driver loads but no audio device appears**
-→ The `AudioDriverKit` registration in `registerAudioDevice()` is scaffolded.
-  Complete it using Apple's [Audio Driver Sample Code](https://developer.apple.com/documentation/audiodriverkit).
-
-**MIDI port not appearing**
-→ The `MIDIDriverKit` registration in `registerMIDIPort()` is scaffolded.
-  Complete it using Apple's [CoreMIDI DriverKit documentation](https://developer.apple.com/documentation/coremidi).
-
-**entitlement not authorized**
-→ The USB transport entitlement must be approved by Apple before the extension
-  will match against `IOUSBHostDevice` outside of SIP-disabled development mode.
+Copy the 2048×1320 light/dark screenshots over `ns7-system-light.png` / `ns7-system-dark.png`.
 
 ---
 
-## Implementation Notes for Completing the Driver
+## Contributing
 
-Two sections are marked as scaffolds and need to be completed with Apple's frameworks:
+Issues and pull requests are welcome — please target the `dext-streaming` branch. Protocol
+changes belong in `NS7Protocol.h` with a host unit test; anything that touches the device
+should say how it was verified on hardware.
 
-### 1. Audio HAL Registration (`NumarkNS7AudioEngine::registerAudioDevice`)
-Use the Xcode **"Audio Driver Extension"** template which generates the full
-`IOUserAudioDriver` + `IOUserAudioDevice` + `IOUserAudioStream` boilerplate.
-Key calls needed:
-```cpp
-IOUserAudioDevice::Create(in_driver, "Numark NS7", /*uid=*/"NumarkNS7-0x15E4-0x0071", ...);
-IOUserAudioStream::Create(in_device, IOUserAudioStreamDirection::Input, ...);
-stream->SetAvailableStreamFormats(&asbd, 1);
-device->SetAvailableSampleRates(sampleRates, 2);  // 44100, 48000
-```
+## Legal
 
-### 2. MIDI Port Registration (`NumarkNS7MIDIDriver::registerMIDIPort`)
-Use the **MIDIDriverKit** framework (macOS 12+):
-```cpp
-#include <MIDIDriverKit/MIDIDriverKit.h>
-MIDIDeviceRef device = MIDIDeviceCreate(..., "Numark NS7", "Numark", "NS7", ...);
-MIDIEntityRef entity = MIDIDeviceAddEntity(device, "MIDI", false, 1, 1, &entity);
-```
-
----
-
-## License
-
-This driver was reverse-engineered from USB descriptor data extracted from the
-original Ploytec kext. The USB protocol (USB Audio Class 1.0, USB MIDI Class 1.0)
-is an open standard. The Ploytec-proprietary `PGKernelDeviceNUMARKNS7` IOKit class
-and `kConfigurationData` blob have been replaced with standard DriverKit equivalents.
-
----
-
-*USB analysis methodology: DMG → HFS+ volume extraction → XAR pkg parsing →*  
-*cpio payload decompression → Info.plist extraction. All data sourced from*  
-*publicly-accessible fields in the device descriptor and kext metadata.*
+This is an independent interoperability project, not affiliated with or endorsed by Numark or
+inMusic. The protocol was determined by observing the device and analysing the original
+driver for compatibility; no Numark code is included. No license has been chosen yet — until
+one is added, all rights are reserved by the author.
