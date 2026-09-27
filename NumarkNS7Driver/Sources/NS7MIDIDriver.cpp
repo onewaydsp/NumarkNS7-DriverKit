@@ -26,6 +26,7 @@ constexpr const char * kFallbackProduct = "Numark USB Audio Device";
 constexpr const char * kFallbackVendor  = "Numark";
 constexpr const char * kPortName        = "MIDI";
 constexpr const char * kModelUID        = "com.andrewabner.ns7.15E4.0071";
+constexpr const char * kManufacturerUID = "Numark";
 constexpr uint32_t     kMaxSysExSpeed   = 39000;   // bytes/s: one 39-byte packet per ms
 constexpr uint32_t     kLoggedSendErrors = 5;
 
@@ -40,7 +41,7 @@ struct NS7MIDIDriver_IVars
     IOUserMIDIEntity      * entity;
     IOUserMIDISource      * source;
     IOUserMIDIDestination * destination;
-    bool                    running;          // __atomic: set by StartIO/StopIO
+    bool                    deviceAdded;      // AddObject(device) succeeded
     uint32_t                midiOutDropped;   // __atomic: messages dropped, FIFO full
     uint32_t                sendErrors;       // USB queue only
     NS7::UmpOutState        midiOutState;     // real-time thread only; SysEx framing across calls
@@ -108,23 +109,39 @@ CreateMidiObjects(NS7MIDIDriver * self, NS7MIDIDriver_IVars * iv)
     OSString * vendor    = CopyStringProperty(usb, "USB Vendor Name", kFallbackVendor);
     OSString * deviceUID = OSString::withCString(uid);
     OSString * modelUID  = OSString::withCString(kModelUID);
+    OSString * mfrUID    = OSString::withCString(kManufacturerUID);
     OSString * portName  = OSString::withCString(kPortName);
     OSNumber * sysex     = OSNumber::withNumber(kMaxSysExSpeed, 32);
     kern_return_t ret    = kIOReturnNoMemory;
 
-    if (!product || !vendor || !deviceUID || !modelUID || !portName || !sysex) goto done;
+    if (!product || !vendor || !deviceUID || !modelUID || !mfrUID || !portName || !sysex) goto done;
 
-    iv->device = IOUserMIDIDevice::Create(self, deviceUID, modelUID, vendor).detach();
-    if (iv->device)
-        iv->entity = IOUserMIDIEntity::Create(self, iv->device, portName, protocol, 1, 1).detach();
-    iv->source      = IOUserMIDISource::Create(self, portName, protocol).detach();
-    iv->destination = IOUserMIDIDestination::Create(self, portName, protocol).detach();
-    if (!iv->device || !iv->entity || !iv->source || !iv->destination) goto done;
+    iv->device = IOUserMIDIDevice::Create(self, deviceUID, modelUID, mfrUID).detach();
+    if (!iv->device) goto done;
+    // Create(..., 1, 1) builds the entity's one source and one destination
+    // itself; use those rather than adding more.
+    iv->entity = IOUserMIDIEntity::Create(self, iv->device, portName, protocol, 1, 1).detach();
+    if (!iv->entity) goto done;
+    iv->source      = iv->entity->GetSource(0).detach();
+    iv->destination = iv->entity->GetDestination(0).detach();
+    if (!iv->source || !iv->destination) {
+        Log("entity has no source or destination");
+        ret = kIOReturnNotFound;
+        goto done;
+    }
 
     if ((ret = iv->device->SetName(product)) != kIOReturnSuccess) goto done;
-    iv->device->SetProperty(IOUserMIDIProperty::Manufacturer, vendor);
-    iv->device->SetProperty(IOUserMIDIProperty::Model, product);
-    iv->entity->SetProperty(IOUserMIDIProperty::MaxSysExSpeed, sysex);
+    if ((ret = iv->source->SetName(portName)) != kIOReturnSuccess) goto done;
+    if ((ret = iv->destination->SetName(portName)) != kIOReturnSuccess) goto done;
+    {
+        kern_return_t r;
+        if ((r = iv->device->SetProperty(IOUserMIDIProperty::Manufacturer, vendor)) != kIOReturnSuccess)
+            Log("SetProperty(Manufacturer) returned 0x%08x (ignored)", r);
+        if ((r = iv->device->SetProperty(IOUserMIDIProperty::Model, product)) != kIOReturnSuccess)
+            Log("SetProperty(Model) returned 0x%08x (ignored)", r);
+        if ((r = iv->entity->SetProperty(IOUserMIDIProperty::MaxSysExSpeed, sysex)) != kIOReturnSuccess)
+            Log("SetProperty(MaxSysExSpeed) returned 0x%08x (ignored)", r);
+    }
 
     // CoreMIDI real-time thread: no locks, no allocation, no logging.
     ret = iv->destination->SetIOBlock(^kern_return_t(const IOUserMIDIUMPWord * words, size_t numWords) {
@@ -134,27 +151,16 @@ CreateMidiObjects(NS7MIDIDriver * self, NS7MIDIDriver_IVars * iv)
     });
     if (ret != kIOReturnSuccess) goto done;
 
-    if ((ret = iv->entity->AddSource(iv->source)) != kIOReturnSuccess) goto done;
-    if ((ret = iv->entity->AddDestination(iv->destination)) != kIOReturnSuccess) goto done;
     if ((ret = iv->device->AddEntity(iv->entity)) != kIOReturnSuccess) goto done;
     if ((ret = self->AddObject(iv->device)) != kIOReturnSuccess) goto done;
-
-    // The headers don't say whether children also need AddObject. Add them
-    // and tolerate "already added".
-    {
-        IOUserMIDIObject * const children[] = { iv->entity, iv->source, iv->destination };
-        for (IOUserMIDIObject * child : children) {
-            const kern_return_t r = self->AddObject(child);
-            if (r != kIOReturnSuccess) Log("AddObject(child) returned 0x%08x (ignored)", r);
-        }
-    }
-    ret = kIOReturnSuccess;
+    iv->deviceAdded = true;
 
 done:
     OSSafeReleaseNULL(product);
     OSSafeReleaseNULL(vendor);
     OSSafeReleaseNULL(deviceUID);
     OSSafeReleaseNULL(modelUID);
+    OSSafeReleaseNULL(mfrUID);
     OSSafeReleaseNULL(portName);
     OSSafeReleaseNULL(sysex);
     return ret;
@@ -190,20 +196,29 @@ IMPL(NS7MIDIDriver, Start)
 kern_return_t
 IMPL(NS7MIDIDriver, Stop)
 {
-    __atomic_store_n(&ivars->running, false, __ATOMIC_RELEASE);
-    if (ivars->provider) ivars->provider->SetMidiClient(nullptr);
-    if (ivars->device) RemoveObject(ivars->device);
+    // Unregister, then wait out the USB queue: MidiInComplete runs there and
+    // calls DeliverMidiIn -> source Send with a client reference it took
+    // before we unregistered. After the sync no Send can be in flight, so the
+    // device can be removed safely. This runs on this service's queue, not
+    // NumarkNS7Device's, so the sync cannot deadlock.
+    if (ivars->provider) {
+        ivars->provider->SetMidiClient(nullptr);
+        ivars->provider->SyncUsbQueue();
+    }
+    if (ivars->deviceAdded) {
+        RemoveObject(ivars->device);
+        ivars->deviceAdded = false;
+    }
     return Stop(provider, SUPERDISPATCH);
 }
 
 kern_return_t
 NS7MIDIDriver::StartIO(OSArray * deviceList)
 {
-    // No destination IO block runs while I/O is stopped, so this is the safe
-    // point to forget a SysEx left open by a previous session.
+    // Reset SysEx framing state for a new I/O session (the destination IO
+    // block is not expected to run before StartIO).
     ivars->midiOutState = {};
     const kern_return_t ret = super::StartIO(deviceList);
-    if (ret == kIOReturnSuccess) __atomic_store_n(&ivars->running, true, __ATOMIC_RELEASE);
     Log("StartIO: 0x%08x", ret);
     return ret;
 }
@@ -211,7 +226,6 @@ NS7MIDIDriver::StartIO(OSArray * deviceList)
 kern_return_t
 NS7MIDIDriver::StopIO()
 {
-    __atomic_store_n(&ivars->running, false, __ATOMIC_RELEASE);
     Log("StopIO");
     return super::StopIO();
 }
@@ -219,9 +233,12 @@ NS7MIDIDriver::StopIO()
 void
 NS7MIDIDriver::DeliverMidiIn(const uint32_t * words, uint32_t count)
 {
-    if (!__atomic_load_n(&ivars->running, __ATOMIC_ACQUIRE) || ivars->source == nullptr) return;
+    if (ivars->source == nullptr) return;
+    // Send returns kIOReturnNotReady while the source isn't enabled (no I/O
+    // session); that is expected, not an error.
     const kern_return_t ret = ivars->source->Send(words, count);
-    if (ret != kIOReturnSuccess && ivars->sendErrors++ < kLoggedSendErrors)
+    if (ret != kIOReturnSuccess && ret != kIOReturnNotReady
+        && ivars->sendErrors++ < kLoggedSendErrors)
         Log("source Send failed: 0x%08x", ret);
 }
 

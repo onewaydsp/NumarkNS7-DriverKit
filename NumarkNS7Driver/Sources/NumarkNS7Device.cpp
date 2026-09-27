@@ -11,6 +11,7 @@
 #include <string.h>
 
 #include <DriverKit/IOBufferMemoryDescriptor.h>
+#include <DriverKit/IODispatchQueue.h>
 #include <DriverKit/IOLib.h>
 #include <DriverKit/OSAction.h>
 #include <DriverKit/OSCollections.h>
@@ -734,4 +735,17 @@ NumarkNS7Device::SetMidiClient(NS7MIDIDriver * client)
     ivars->midiClient = client;
     IOLockUnlock(ivars->midiClientLock);
     if (old) old->release();
+}
+
+void
+NumarkNS7Device::SyncUsbQueue()
+{
+    IODispatchQueue * queue = nullptr;
+    const kern_return_t ret = CopyDispatchQueue(kIOServiceDefaultQueueName, &queue);
+    if (ret != kIOReturnSuccess || queue == nullptr) {
+        Log("SyncUsbQueue: CopyDispatchQueue failed: 0x%08x", ret);
+        return;
+    }
+    queue->DispatchSync(^{});
+    queue->release();
 }

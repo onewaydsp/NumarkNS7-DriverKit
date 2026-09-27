@@ -45,6 +45,12 @@ public:
     // supplies MIDI out; nullptr unregisters it. Safe from any thread.
     void SetMidiClient(NS7MIDIDriver * client) LOCALONLY;
 
+    // Waits until any block running on this service's default queue (where
+    // MidiInComplete delivers MIDI in) has finished. Call after
+    // SetMidiClient(nullptr) to be sure no delivery is still in flight. Must
+    // not be called from this service's default queue.
+    void SyncUsbQueue() LOCALONLY;
+
 protected:
     // Streaming completions. Each in-flight request has its own OSAction whose
     // reference holds the request's slot index.
