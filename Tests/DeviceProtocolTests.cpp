@@ -337,3 +337,75 @@ TEST(test_iso_frame_resyncs_when_due_or_past)
     CHECK_EQ(NextIsoFrame(1000, 1000, 10), 1010ull);   // due now: too late to schedule
     CHECK_EQ(NextIsoFrame(990,  1000, 10), 1010ull);
 }
+
+// After system sleep the NS7's iso chains died: the host controller frame
+// counter was far behind the planned frame, every resubmit got
+// kIOReturnIsoTooNew, and no slot was ever submitted again.
+
+TEST(test_iso_max_ahead_covers_lead_and_deepest_queue)
+{
+    // 10 frames of lead plus the 8 x 4 ms feedback queue, with headroom.
+    CHECK(kIsoMaxAheadFrames >= 10 + 8 * 4);
+}
+
+TEST(test_iso_frame_kept_up_to_max_ahead)
+{
+    CHECK_EQ(NextIsoFrame(1000 + kIsoMaxAheadFrames, 1000, 10), 1000ull + kIsoMaxAheadFrames);
+    CHECK(!IsoFrameTooFarAhead(1000 + kIsoMaxAheadFrames, 1000));
+}
+
+TEST(test_iso_frame_resyncs_when_implausibly_far_ahead)
+{
+    CHECK(IsoFrameTooFarAhead(1001 + kIsoMaxAheadFrames, 1000));
+    CHECK_EQ(NextIsoFrame(1001 + kIsoMaxAheadFrames, 1000, 10), 1010ull);
+    CHECK_EQ(NextIsoFrame(900000, 1000, 10), 1010ull);
+}
+
+TEST(test_iso_frame_resyncs_after_counter_reset)
+{
+    // The bus frame counter restarted near zero (e.g. controller reset at wake).
+    CHECK_EQ(NextIsoFrame(5000000, 3, 10), 13ull);
+    CHECK(IsoFrameTooFarAhead(5000000, 3));
+}
+
+TEST(test_iso_frame_ahead_check_does_not_overflow)
+{
+    const uint64_t top = UINT64_MAX;
+    CHECK_EQ(NextIsoFrame(top - 2, top - 5, 10), top - 2);   // 3 ahead: kept
+    CHECK(!IsoFrameTooFarAhead(top - 2, top - 5));
+    CHECK(IsoFrameTooFarAhead(top, 0));
+    CHECK_EQ(NextIsoFrame(top, 0, 10), 10ull);
+    CHECK(!IsoFrameTooFarAhead(5, 10));                        // behind is not "ahead"
+}
+
+TEST(test_iso_submit_retry_only_for_frame_errors)
+{
+    CHECK(IsoSubmitRetryable(kReturnIsoTooNew));
+    CHECK(IsoSubmitRetryable(kReturnIsoTooOld));
+    CHECK(!IsoSubmitRetryable(0));
+    CHECK(!IsoSubmitRetryable(kReturnAborted));
+    CHECK(!IsoSubmitRetryable(kReturnNotResponding));
+    CHECK(!IsoSubmitRetryable(kReturnNoDevice));
+}
+
+TEST(test_completion_resubmits_now_unless_pipe_is_going_away)
+{
+    CHECK(CompletionResubmitsNow(0));
+    CHECK(CompletionResubmitsNow(0xe00002e7u));                // underrun
+    CHECK(CompletionResubmitsNow(0xe00002bcu));                // generic error
+    CHECK(CompletionResubmitsNow(kReturnIsoTooNew));
+    CHECK(!CompletionResubmitsNow(kReturnAborted));
+    CHECK(!CompletionResubmitsNow(kReturnNotResponding));
+    CHECK(!CompletionResubmitsNow(kReturnNoDevice));
+    CHECK(!CompletionResubmitsNow(kReturnOffline));
+}
+
+TEST(test_iocodes_match_iokit_values)
+{
+    CHECK_EQ(kReturnIsoTooOld, 0xe00002eeu);
+    CHECK_EQ(kReturnIsoTooNew, 0xe00002efu);
+    CHECK_EQ(kReturnAborted, 0xe00002ebu);
+    CHECK_EQ(kReturnNotResponding, 0xe00002edu);
+    CHECK_EQ(kReturnNoDevice, 0xe00002c0u);
+    CHECK_EQ(kReturnOffline, 0xe00002d7u);
+}

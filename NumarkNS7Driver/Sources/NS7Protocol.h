@@ -164,12 +164,60 @@ inline uint32_t FillPlaybackPacketSizes(int feedbackFrames, uint32_t * slot, uin
 
 // ── Isochronous scheduling ───────────────────────────────────────────────────
 
+// Largest plausible distance between the frame the next request continues
+// from and the current bus frame. In steady state `planned` runs at most
+// lead + queue depth ahead: 10 + 4 x 4 ms playback = 26, 10 + 8 x 4 ms
+// feedback = 42 frames. Anything further means the bus frame counter moved
+// under us (it went backwards or restarted, e.g. across system sleep), and
+// the controller would reject the request with kIOReturnIsoTooNew.
+constexpr uint64_t kIsoMaxAheadFrames = 64;
+
+// True if `planned` is more than kIsoMaxAheadFrames after `now`. Written
+// with a subtraction so it cannot overflow near the top of the 64-bit range.
+inline bool IsoFrameTooFarAhead(uint64_t planned, uint64_t now)
+{
+    return planned > now && planned - now > kIsoMaxAheadFrames;
+}
+
 // Frame an iso request should start on. `planned` continues the previous
-// request; once it is no longer in the future (the host fell behind and the
-// controller would reject it as too old), restart `lead` frames after `now`.
+// request. Restart `lead` frames after `now` when `planned` is no longer in
+// the future (the host fell behind; the controller would reject it as too
+// old) or is implausibly far ahead (the bus frame counter went backwards or
+// was reset, e.g. after system sleep; the controller would reject it as too
+// new, and before this check every resubmit kept failing that way).
 inline uint64_t NextIsoFrame(uint64_t planned, uint64_t now, uint64_t lead)
 {
-    return planned > now ? planned : now + lead;
+    if (planned > now && !IsoFrameTooFarAhead(planned, now)) return planned;
+    return now + lead;
+}
+
+// IOReturn values used by the streaming policy below (IOReturn.h:
+// iokit_common_err(code)), repeated here so the host tests can use them.
+constexpr uint32_t kReturnNoDevice      = 0xe00002c0;
+constexpr uint32_t kReturnOffline       = 0xe00002d7;
+constexpr uint32_t kReturnAborted       = 0xe00002eb;
+constexpr uint32_t kReturnNotResponding = 0xe00002ed;
+constexpr uint32_t kReturnIsoTooOld     = 0xe00002ee;
+constexpr uint32_t kReturnIsoTooNew     = 0xe00002ef;
+
+// An iso submission that failed with one of these is worth one immediate
+// retry on a freshly read bus frame: the frame was wrong, not the pipe.
+// Other failures (device gone, not responding, aborted) are not retried in
+// place, so a detached device can never make the driver spin.
+inline bool IsoSubmitRetryable(uint32_t ret)
+{
+    return ret == kReturnIsoTooNew || ret == kReturnIsoTooOld;
+}
+
+// Whether a completion with this status resubmits its slot right away.
+// Statuses meaning the pipe is being aborted or the device is going away
+// (system sleep, unplug, controller reset) leave the slot idle instead; the
+// driver's periodic re-arm restarts it, paced, so an endpoint that keeps
+// aborting new requests cannot turn into a busy loop.
+inline bool CompletionResubmitsNow(uint32_t status)
+{
+    return status != kReturnAborted && status != kReturnNotResponding
+        && status != kReturnNoDevice && status != kReturnOffline;
 }
 
 // ── Rate feedback (EP 0x81) ──────────────────────────────────────────────────

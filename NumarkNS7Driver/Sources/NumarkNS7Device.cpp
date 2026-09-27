@@ -9,12 +9,14 @@
 #include <os/log.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #include <DriverKit/IOBufferMemoryDescriptor.h>
 #include <DriverKit/IODispatchQueue.h>
 #include <DriverKit/IOLib.h>
 #include <DriverKit/OSAction.h>
 #include <DriverKit/OSCollections.h>
+#include <DriverKit/IOTimerDispatchSource.h>
 #include <USBDriverKit/IOUSBHostDevice.h>
 #include <USBDriverKit/IOUSBHostFamilyDefinitions.h>
 #include <USBDriverKit/IOUSBHostInterface.h>
@@ -26,6 +28,10 @@
 #include "NumarkNS7Device.h"
 
 #define Log(fmt, ...) os_log(OS_LOG_DEFAULT, "NumarkNS7: " fmt, ##__VA_ARGS__)
+// Recovery lines, at most kLoggedRecoveryPerStats per stats period.
+#define LogRecovery(iv, fmt, ...) do { \
+        if ((iv)->recoveryLogged++ < kLoggedRecoveryPerStats) Log(fmt, ##__VA_ARGS__); \
+    } while (0)
 
 namespace {
 
@@ -58,6 +64,24 @@ constexpr uint32_t kLoggedErrorsPerPipe = 5;
 constexpr uint32_t kLoggedMidiPerStats  = 100;                // MIDI lines per stats period
 constexpr uint32_t kMidiOutTimeoutMs    = 1000;
 // STALL retries and backoff: NS7::kMidiOutStallRetries, NS7::kMidiOutStallBackoffTicks.
+constexpr uint32_t kLoggedRecoveryPerStats = 5;               // recovery lines per stats period
+constexpr uint64_t kWatchdogPeriodNs    = 100ull * 1000 * 1000;   // 100 ms
+constexpr uint64_t kWatchdogLeewayNs    = 10ull * 1000 * 1000;
+constexpr uint32_t kWatchdogStuckTicks  = 10;                 // ~1 s without an iso completion
+
+// A request never legitimately runs further ahead of the bus than the lead
+// plus its queue; NextIsoFrame treats anything beyond kIsoMaxAheadFrames as a
+// moved frame counter.
+static_assert(kIsoLeadFrames + kPlaybackInFlight * kPlaybackMicroframes / 8 < NS7::kIsoMaxAheadFrames,
+              "playback queue deeper than kIsoMaxAheadFrames");
+static_assert(kIsoLeadFrames + kFeedbackInFlight * kFeedbackFrames < NS7::kIsoMaxAheadFrames,
+              "feedback queue deeper than kIsoMaxAheadFrames");
+static_assert(NS7::kReturnIsoTooNew == uint32_t(kIOReturnIsoTooNew) &&
+              NS7::kReturnIsoTooOld == uint32_t(kIOReturnIsoTooOld) &&
+              NS7::kReturnAborted == uint32_t(kIOReturnAborted) &&
+              NS7::kReturnNotResponding == uint32_t(kIOReturnNotResponding) &&
+              NS7::kReturnNoDevice == uint32_t(kIOReturnNoDevice) &&
+              NS7::kReturnOffline == uint32_t(kIOReturnOffline), "IOReturn values");
 
 typedef NS7::MidiOutStateMachine::Action MidiOutAction;
 typedef NS7::MidiOutStateMachine::Result MidiOutResult;
@@ -71,15 +95,17 @@ struct IsoSlot {
     IOUSBIsochronousFrame    * framePtr;
     OSAction                 * action;
     uint64_t                   firstFrame;
+    bool                       armed;     // a request is in flight (see "Keeping the chains alive")
 };
 
 struct BulkSlot {
     IOBufferMemoryDescriptor * buffer;
     uint8_t                  * ptr;
     OSAction                 * action;
+    bool                       armed;     // a request is in flight
 };
 
-struct PipeStats { uint64_t done, errors, resyncs, stalls; };
+struct PipeStats { uint64_t done, errors, resyncs, stalls, rearms; };
 
 } // namespace
 
@@ -105,6 +131,16 @@ struct NumarkNS7Device_IVars
     int      feedbackFrames = -1;   // latest frames/ms from EP 0x81
 
     bool     stopping = false;
+    bool     sleeping = false;      // between SetPowerState(Off) and the next wake
+
+    IOTimerDispatchSource * watchdog = nullptr;
+    OSAction              * watchdogAction = nullptr;
+    uint64_t  isoCompletions = 0;   // both iso chains; the watchdog checks it moves
+    uint64_t  watchdogSeen = 0;
+    uint32_t  watchdogIdleTicks = 0;
+    uint64_t  isoAborts = 0;        // watchdog aborts of stuck iso pipes
+    uint32_t  wakes = 0;
+    uint32_t  recoveryLogged = 0;   // reset with each stats line
 
     NS7::RawMidiToUmp midiParser;
 
@@ -162,6 +198,7 @@ NumarkNS7Device::free()
         ReleaseBulkSlots(ivars->midiIn, kMidiInFlight);
         ReleaseBulkSlots(&ivars->midiOut, 1);
         OSSafeReleaseNULL(ivars->control);
+        OSSafeReleaseNULL(ivars->watchdog);   // cancelled in Stop()
         OSSafeReleaseNULL(ivars->midiClient);
         OSSafeReleaseNULL(ivars->midiService);
         if (ivars->midiClientLock) IOLockFree(ivars->midiClientLock);
@@ -348,14 +385,74 @@ TransferOk(IOReturn status)
     return status == kIOReturnSuccess || status == kIOReturnUnderrun;
 }
 
+// ── Keeping the chains alive ─────────────────────────────────────────────────
+//
+// Each request slot (4 playback, 8 feedback, 3 capture, 16 MIDI in) has an
+// `armed` flag: set when its request is accepted, cleared when it completes
+// or when a submission fails. Normally every completion resubmits its own
+// slot, so the flag only drops for an instant. A slot stays idle when:
+//   - its submission failed synchronously (no completion will ever come);
+//   - it completed with a "pipe going away" status (aborted, not responding,
+//     no device, offline: NS7::CompletionResubmitsNow), which is not
+//     resubmitted in place so an endpoint that aborts everything can't spin;
+//   - a bulk read ended with a non-STALL error, or ClearStall failed;
+//   - it completed while the system is asleep.
+// Before this, such a slot was lost for good. After a sleep/wake on hardware
+// every iso resubmit failed with kIOReturnIsoTooNew and both iso chains, and
+// with them the stats line and all MIDI, stopped permanently.
+//
+// RearmIdle() restarts every idle slot (bounded: one attempt per slot). It
+// runs after each successful playback or feedback completion (~every 4 ms
+// while either chain lives, so one living chain revives the other and the
+// bulk reads) and from the watchdog timer (every 100 ms), which covers the
+// case where every slot died at once and no completion will ever arrive. The
+// watchdog also aborts the iso pipes if no iso request completed for ~1 s:
+// a request stranded at a frame the bus will not reach soon then comes back
+// aborted and is re-armed. Nothing is re-armed while `stopping` or
+// `sleeping`. A detached device costs at most one failed call per idle slot
+// per re-arm pass until Stop() runs; it never loops.
+
 static uint64_t
 NextFrame(NumarkNS7Device_IVars * iv, int pipe, uint64_t planned)
 {
     uint64_t now = 0;
     if (iv->interfaces[0]->GetFrameNumber(&now, nullptr) != kIOReturnSuccess) return planned;
+    if (NS7::IsoFrameTooFarAhead(planned, now))
+        LogRecovery(iv, "iso resync: EP 0x%02x planned frame %llu is %llu ahead of the bus",
+                    kEndpoints[pipe], planned, planned - now);
     const uint64_t frame = NS7::NextIsoFrame(planned, now, kIsoLeadFrames);
     if (frame != planned && planned != 0) iv->stats[pipe].resyncs++;
     return frame;
+}
+
+// Submits `slot` on iso pipe `pipe`, continuing the chain at *chainFrame. If
+// the controller rejects the start frame (IsoTooNew/IsoTooOld), reads the
+// bus frame again and retries once at now + lead. The chain frame advances
+// only when a request was accepted.
+static kern_return_t
+SubmitIso(NumarkNS7Device_IVars * iv, int pipe, IsoSlot & slot, uint64_t * chainFrame,
+          uint64_t framesPerRequest)
+{
+    slot.firstFrame = NextFrame(iv, pipe, *chainFrame);
+    kern_return_t ret = iv->pipes[pipe]->IsochIO(slot.data, slot.frames, slot.firstFrame, slot.action);
+    if (NS7::IsoSubmitRetryable(uint32_t(ret))) {
+        const kern_return_t first = ret;
+        uint64_t now = 0;
+        if (iv->interfaces[0]->GetFrameNumber(&now, nullptr) == kIOReturnSuccess) {
+            iv->stats[pipe].resyncs++;
+            slot.firstFrame = now + kIsoLeadFrames;
+            ret = iv->pipes[pipe]->IsochIO(slot.data, slot.frames, slot.firstFrame, slot.action);
+            if (ret == kIOReturnSuccess)
+                LogRecovery(iv, "iso resync: EP 0x%02x after 0x%08x", kEndpoints[pipe], first);
+            else
+                LogRecovery(iv, "iso resync: EP 0x%02x after 0x%08x failed: 0x%08x; slot re-armed later",
+                            kEndpoints[pipe], first, ret);
+        }
+    }
+    slot.armed = ret == kIOReturnSuccess;
+    if (slot.armed) *chainFrame = slot.firstFrame + framesPerRequest;
+    else            NoteError(iv, pipe, ret);
+    return ret;
 }
 
 static kern_return_t
@@ -367,13 +464,7 @@ SubmitPlayback(NumarkNS7Device_IVars * iv, uint32_t i)
     for (uint32_t k = 0; k < kPlaybackMicroframes; k++)
         slot.framePtr[k] = { kIOReturnInvalid, sizes[k], 0, 0, 0 };
     // The data is silence: nothing writes the buffers yet.
-
-    slot.firstFrame = NextFrame(iv, kPipePlayback, iv->playbackFrame);
-    iv->playbackFrame = slot.firstFrame + kPlaybackMicroframes / 8;
-    kern_return_t ret = iv->pipes[kPipePlayback]->IsochIO(slot.data, slot.frames, slot.firstFrame,
-                                                         slot.action);
-    if (ret != kIOReturnSuccess) NoteError(iv, kPipePlayback, ret);
-    return ret;
+    return SubmitIso(iv, kPipePlayback, slot, &iv->playbackFrame, kPlaybackMicroframes / 8);
 }
 
 static kern_return_t
@@ -382,21 +473,48 @@ SubmitFeedback(NumarkNS7Device_IVars * iv, uint32_t i)
     IsoSlot & slot = iv->feedback[i];
     for (uint32_t k = 0; k < kFeedbackFrames; k++)
         slot.framePtr[k] = { kIOReturnInvalid, kFeedbackMaxPacket, 0, 0, 0 };
-
-    slot.firstFrame = NextFrame(iv, kPipeFeedback, iv->feedbackFrame);
-    iv->feedbackFrame = slot.firstFrame + kFeedbackFrames;
-    kern_return_t ret = iv->pipes[kPipeFeedback]->IsochIO(slot.data, slot.frames, slot.firstFrame,
-                                                         slot.action);
-    if (ret != kIOReturnSuccess) NoteError(iv, kPipeFeedback, ret);
-    return ret;
+    return SubmitIso(iv, kPipeFeedback, slot, &iv->feedbackFrame, kFeedbackFrames);
 }
 
 static kern_return_t
 SubmitBulk(NumarkNS7Device_IVars * iv, int pipe, BulkSlot & slot, uint32_t length)
 {
     kern_return_t ret = iv->pipes[pipe]->AsyncIO(slot.buffer, length, slot.action, 0);
+    slot.armed = ret == kIOReturnSuccess;
     if (ret != kIOReturnSuccess) NoteError(iv, pipe, ret);
     return ret;
+}
+
+// Restarts every idle slot; see "Keeping the chains alive". `why` is logged.
+static void
+RearmIdle(NumarkNS7Device_IVars * iv, const char * why)
+{
+    if (iv->stopping || iv->sleeping) return;
+    uint32_t play = 0, fb = 0, cap = 0, midi = 0;
+    // Feedback first, as at start, so playback follows the device's rate.
+    for (uint32_t i = 0; i < kFeedbackInFlight; i++) {
+        if (iv->feedback[i].armed || iv->feedback[i].action == nullptr) continue;
+        if (SubmitFeedback(iv, i) == kIOReturnSuccess) fb++;
+    }
+    for (uint32_t i = 0; i < kPlaybackInFlight; i++) {
+        if (iv->playback[i].armed || iv->playback[i].action == nullptr) continue;
+        if (SubmitPlayback(iv, i) == kIOReturnSuccess) play++;
+    }
+    for (uint32_t i = 0; i < kCaptureInFlight; i++) {
+        if (iv->capture[i].armed || iv->capture[i].action == nullptr) continue;
+        if (SubmitBulk(iv, kPipeCapture, iv->capture[i], kCaptureBytes) == kIOReturnSuccess) cap++;
+    }
+    for (uint32_t i = 0; i < kMidiInFlight; i++) {
+        if (iv->midiIn[i].armed || iv->midiIn[i].action == nullptr) continue;
+        if (SubmitBulk(iv, kPipeMidiIn, iv->midiIn[i], NS7::kMidiPacketBytes) == kIOReturnSuccess) midi++;
+    }
+    if (play + fb + cap + midi == 0) return;
+    iv->stats[kPipePlayback].rearms += play;
+    iv->stats[kPipeFeedback].rearms += fb;
+    iv->stats[kPipeCapture].rearms  += cap;
+    iv->stats[kPipeMidiIn].rearms   += midi;
+    LogRecovery(iv, "re-armed %u playback, %u feedback, %u capture, %u MIDI in (%{public}s)",
+                play, fb, cap, midi, why);
 }
 
 // A STALL on a bulk IN is recoverable: clear it and queue the read again.
@@ -454,7 +572,12 @@ LogStats(NumarkNS7Device_IVars * iv)
         iv->midiOutState.InFlightBytes(), iv->midiOutState.BackoffTicks(), haveClient ? 1 : 0);
     if (iv->midiLogged > kLoggedMidiPerStats)
         Log("%u MIDI messages not logged", iv->midiLogged - kLoggedMidiPerStats);
+    const PipeStats & pr = iv->stats[kPipePlayback], & fr = iv->stats[kPipeFeedback];
+    if (pr.rearms + fr.rearms + c.rearms + m.rearms + iv->isoAborts + iv->wakes)
+        Log("recovery: re-armed play %llu fb %llu cap %llu MIDI in %llu | iso aborts %llu | wakes %u",
+            pr.rearms, fr.rearms, c.rearms, m.rearms, iv->isoAborts, iv->wakes);
     iv->midiLogged = 0;
+    iv->recoveryLogged = 0;
     iv->midiOutState.OnStatsLogged();
 }
 
@@ -519,7 +642,8 @@ SendMidiOut(NumarkNS7Device_IVars * iv)
 static void
 PumpMidiOut(NumarkNS7Device_IVars * iv)
 {
-    if (iv->stopping || iv->midiOut.action == nullptr || !iv->midiOutState.CanStart()) return;
+    if (iv->stopping || iv->sleeping || iv->midiOut.action == nullptr || !iv->midiOutState.CanStart())
+        return;
     NS7MIDIDriver * client = CopyMidiClient(iv);
     if (client == nullptr) return;
     iv->midiOutPumpClient++;
@@ -606,19 +730,29 @@ void
 IMPL(NumarkNS7Device, PlaybackComplete)
 {
     NumarkNS7Device_IVars * iv = ivars;
+    const uint32_t i = SlotIndex(action);
+    iv->playback[i].armed = false;
     if (iv->stopping) return;
-    if (!TransferOk(status)) NoteError(iv, kPipePlayback, status);
+    iv->isoCompletions++;
+    const bool ok = TransferOk(status);
+    if (!ok) NoteError(iv, kPipePlayback, status);
     else iv->stats[kPipePlayback].done++;
-    SubmitPlayback(iv, SlotIndex(action));
+    if (iv->sleeping || !NS7::CompletionResubmitsNow(uint32_t(status))) return;   // re-armed later
+    SubmitPlayback(iv, i);
+    if (ok) RearmIdle(iv, "playback");
 }
 
 void
 IMPL(NumarkNS7Device, FeedbackComplete)
 {
     NumarkNS7Device_IVars * iv = ivars;
+    const uint32_t i = SlotIndex(action);
+    IsoSlot & slot = iv->feedback[i];
+    slot.armed = false;
     if (iv->stopping) return;
-    IsoSlot & slot = iv->feedback[SlotIndex(action)];
-    if (!TransferOk(status)) NoteError(iv, kPipeFeedback, status);
+    iv->isoCompletions++;
+    const bool ok = TransferOk(status);
+    if (!ok) NoteError(iv, kPipeFeedback, status);
     else iv->stats[kPipeFeedback].done++;
 
     for (uint32_t k = 0; k < kFeedbackFrames; k++) {
@@ -629,7 +763,9 @@ IMPL(NumarkNS7Device, FeedbackComplete)
         iv->feedbackFrames = frames;
         if (++iv->feedbackPackets % kStatsEveryFeedback == 0) LogStats(iv);
     }
-    SubmitFeedback(iv, SlotIndex(action));
+    if (iv->sleeping || !NS7::CompletionResubmitsNow(uint32_t(status))) return;   // re-armed later
+    SubmitFeedback(iv, i);
+    if (ok) RearmIdle(iv, "feedback");
     iv->midiOutState.OnTick();
     PumpMidiOut(iv);
 }
@@ -640,6 +776,7 @@ IMPL(NumarkNS7Device, CaptureComplete)
     NumarkNS7Device_IVars * iv = ivars;
     if (iv->stopping) return;
     BulkSlot & slot = iv->capture[SlotIndex(action)];
+    slot.armed = false;
     if (status == kUSBHostReturnPipeStalled) {
         NoteError(iv, kPipeCapture, status);
         RecoverBulk(iv, kPipeCapture, slot, kCaptureBytes);
@@ -647,7 +784,7 @@ IMPL(NumarkNS7Device, CaptureComplete)
     }
     if (!TransferOk(status)) {
         NoteError(iv, kPipeCapture, status);
-        return;
+        return;   // idle: RearmIdle restarts it on the next feedback tick
     }
     // Capture data is not delivered anywhere yet; the read keeps the stream alive.
     iv->stats[kPipeCapture].done++;
@@ -661,6 +798,7 @@ IMPL(NumarkNS7Device, MidiInComplete)
     NumarkNS7Device_IVars * iv = ivars;
     if (iv->stopping) return;
     BulkSlot & slot = iv->midiIn[SlotIndex(action)];
+    slot.armed = false;
     if (status == kUSBHostReturnPipeStalled) {
         NoteError(iv, kPipeMidiIn, status);
         RecoverBulk(iv, kPipeMidiIn, slot, NS7::kMidiPacketBytes);
@@ -668,7 +806,7 @@ IMPL(NumarkNS7Device, MidiInComplete)
     }
     if (!TransferOk(status)) {
         NoteError(iv, kPipeMidiIn, status);
-        return;
+        return;   // idle: RearmIdle restarts it on the next feedback tick
     }
     iv->stats[kPipeMidiIn].done++;
     uint8_t bytes[NS7::kMidiInDataBytes];
@@ -707,6 +845,94 @@ IMPL(NumarkNS7Device, MidiOutComplete)
         break;
     }
     PumpMidiOut(iv);
+}
+
+// ── Watchdog and power ───────────────────────────────────────────────────────
+
+static void
+ArmWatchdog(NumarkNS7Device_IVars * iv)
+{
+    const uint64_t now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+    iv->watchdog->WakeAtTime(kIOTimerClockUptimeRaw, now + kWatchdogPeriodNs, kWatchdogLeewayNs);
+}
+
+// Runs on the default queue, like every completion, so it needs no locking.
+void
+IMPL(NumarkNS7Device, WatchdogFired)
+{
+    NumarkNS7Device_IVars * iv = ivars;
+    (void)action;
+    (void)time;
+    if (iv->stopping || iv->watchdog == nullptr) return;
+    if (iv->sleeping) {
+        iv->watchdogIdleTicks = 0;
+    } else {
+        RearmIdle(iv, "watchdog");
+        if (iv->isoCompletions != iv->watchdogSeen) {
+            iv->watchdogSeen = iv->isoCompletions;
+            iv->watchdogIdleTicks = 0;
+        } else if (++iv->watchdogIdleTicks >= kWatchdogStuckTicks) {
+            // Requests may be parked at frames the bus won't reach soon.
+            // Aborting returns them (status aborted); the next pass re-arms.
+            iv->watchdogIdleTicks = 0;
+            iv->isoAborts++;
+            LogRecovery(iv, "iso watchdog: no iso completion for ~1 s, aborting EP 0x%02x and 0x%02x",
+                        kEndpoints[kPipePlayback], kEndpoints[kPipeFeedback]);
+            iv->pipes[kPipePlayback]->Abort(kIOUSBAbortAsynchronous, kIOReturnAborted, this);
+            iv->pipes[kPipeFeedback]->Abort(kIOUSBAbortAsynchronous, kIOReturnAborted, this);
+        }
+    }
+    ArmWatchdog(iv);
+}
+
+// Creates and starts the watchdog on the default queue. Not fatal: without
+// it, completions still re-arm idle slots while any iso request lives.
+static void
+StartWatchdog(NumarkNS7Device * self, NumarkNS7Device_IVars * iv)
+{
+    IODispatchQueue * queue = nullptr;
+    kern_return_t ret = self->CopyDispatchQueue(kIOServiceDefaultQueueName, &queue);
+    if (ret == kIOReturnSuccess) ret = IOTimerDispatchSource::Create(queue, &iv->watchdog);
+    if (ret == kIOReturnSuccess) ret = self->CreateActionWatchdogFired(0, &iv->watchdogAction);
+    if (ret == kIOReturnSuccess) ret = iv->watchdog->SetHandler(iv->watchdogAction);
+    OSSafeReleaseNULL(queue);
+    if (ret != kIOReturnSuccess) {
+        Log("watchdog unavailable: 0x%08x; idle slots re-armed from completions only", ret);
+        OSSafeReleaseNULL(iv->watchdogAction);
+        OSSafeReleaseNULL(iv->watchdog);
+        return;
+    }
+    ArmWatchdog(iv);
+}
+
+// Power changes arrive on the default queue. On sleep (Off) the host aborts
+// or suspends our requests; completions then leave their slots idle instead
+// of resubmitting into a sleeping bus. On the next non-Off state the chain
+// frames are dropped (so NextIsoFrame restarts both chains at the current
+// bus frame + lead) and every idle slot is re-armed.
+kern_return_t
+IMPL(NumarkNS7Device, SetPowerState)
+{
+    NumarkNS7Device_IVars * iv = ivars;
+    const bool off = powerFlags == kIOServicePowerCapabilityOff;
+    const bool waking = !off && iv->sleeping;
+    if (off && !iv->sleeping) {
+        Log("power: sleeping (0x%08x)", powerFlags);
+        iv->sleeping = true;
+    } else if (!waking) {
+        Log("power: state 0x%08x", powerFlags);
+    }
+    const kern_return_t ret = SetPowerState(powerFlags, SUPERDISPATCH);
+    if (waking) {
+        Log("power: waking (0x%08x)", powerFlags);
+        iv->sleeping = false;
+        iv->wakes++;
+        iv->playbackFrame = 0;
+        iv->feedbackFrame = 0;
+        iv->watchdogIdleTicks = 0;
+        RearmIdle(iv, "wake");
+    }
+    return ret;
 }
 
 // ── Lifecycle ────────────────────────────────────────────────────────────────
@@ -824,6 +1050,7 @@ IMPL(NumarkNS7Device, Start)
 
     ret = StartStreaming(this, ivars);
     if (ret != kIOReturnSuccess) goto fail;
+    StartWatchdog(this, ivars);
 
     RegisterService();
     return kIOReturnSuccess;
@@ -840,6 +1067,9 @@ kern_return_t
 IMPL(NumarkNS7Device, Stop)
 {
     ivars->stopping = true;
+    // The handler checks `stopping`; the source itself is released in free().
+    if (ivars->watchdog) ivars->watchdog->Cancel(^{});
+    OSSafeReleaseNULL(ivars->watchdogAction);
     ivars->midiOutState.OnStop();
     SetMidiClient(nullptr);
     if (ivars->playback[0].action) LogStats(ivars);

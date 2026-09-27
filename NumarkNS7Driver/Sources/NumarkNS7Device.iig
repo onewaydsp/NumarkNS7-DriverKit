@@ -24,6 +24,7 @@
 
 #include <Availability.h>
 #include <DriverKit/IOService.iig>
+#include <DriverKit/IOTimerDispatchSource.iig>
 #include <USBDriverKit/IOUSBHostPipe.iig>
 
 class IOUSBHostDevice;
@@ -38,6 +39,10 @@ public:
 
     virtual kern_return_t Start(IOService * provider) override;
     virtual kern_return_t Stop(IOService * provider) override;
+
+    // System sleep/wake. Sleep (kIOServicePowerCapabilityOff) parks the
+    // streaming chains; wake restarts them on a freshly read bus frame.
+    virtual kern_return_t SetPowerState(uint32_t powerFlags) override LOCAL;
 
     // Accessors for the audio and MIDI services, which run in this process.
     IOUSBHostDevice * GetUSBDevice() LOCALONLY;
@@ -71,6 +76,12 @@ protected:
     virtual void MidiOutComplete(OSAction * action, IOReturn status,
                                  uint32_t actualByteCount, uint64_t completionTimestamp)
         TYPE(IOUSBHostPipe::CompleteAsyncIO);
+
+    // Streaming watchdog (every ~100 ms on the default queue): restarts any
+    // request slot that is idle, and aborts the iso pipes if no iso request
+    // has completed for ~1 s so stranded requests come back and are re-armed.
+    virtual void WatchdogFired(OSAction * action, uint64_t time)
+        TYPE(IOTimerDispatchSource::TimerOccurred);
 };
 
 #endif /* NumarkNS7Device_h */
