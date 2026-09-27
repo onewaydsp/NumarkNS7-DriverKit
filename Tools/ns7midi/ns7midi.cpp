@@ -119,6 +119,7 @@ static int Monitor(double seconds)
     if (err == noErr) err = MIDIPortConnectSource(port, source, nullptr);
     if (err != noErr) {
         std::fprintf(stderr, "input setup failed: %d\n", int(err));
+        MIDIClientDispose(client);
         return 1;
     }
     std::printf("Monitoring \"%s\" for %.0f s. Move controls on the NS7.\n",
@@ -129,11 +130,27 @@ static int Monitor(double seconds)
     return 0;
 }
 
+// Parses one hex byte token strictly: no empty token, no leading sign, no
+// trailing garbage, and no value over 0xFF.
+static bool ParseHexByte(const char * token, uint8_t * out)
+{
+    if (token[0] == '\0' || token[0] == '-' || token[0] == '+') return false;
+    char * end = nullptr;
+    const unsigned long value = std::strtoul(token, &end, 16);
+    if (end == token || *end != '\0' || value > 0xFF) return false;
+    *out = uint8_t(value);
+    return true;
+}
+
 // Parses hex bytes into MIDI 1.0 channel voice messages as UMP type-2 words.
 static bool ParseChannelVoice(int argc, const char * argv[], std::vector<UInt32> * words)
 {
     std::vector<uint8_t> bytes;
-    for (int i = 0; i < argc; i++) bytes.push_back(uint8_t(std::strtoul(argv[i], nullptr, 16)));
+    for (int i = 0; i < argc; i++) {
+        uint8_t byte = 0;
+        if (!ParseHexByte(argv[i], &byte)) return false;
+        bytes.push_back(byte);
+    }
     for (size_t i = 0; i < bytes.size(); ) {
         const uint8_t status = bytes[i];
         if (status < 0x80 || status >= 0xF0) return false;
@@ -166,7 +183,15 @@ static int Send(int argc, const char * argv[])
     Byte storage[1024];
     auto * list = reinterpret_cast<MIDIEventList *>(storage);
     MIDIEventPacket * packet = MIDIEventListInit(list, kMIDIProtocol_1_0);
-    for (UInt32 w : words) packet = MIDIEventListAdd(list, sizeof storage, packet, 0, 1, &w);
+    for (UInt32 w : words) {
+        MIDIEventPacket * next = MIDIEventListAdd(list, sizeof storage, packet, 0, 1, &w);
+        if (next == nullptr) {
+            std::fprintf(stderr, "too many messages for one event list\n");
+            MIDIClientDispose(client);
+            return 1;
+        }
+        packet = next;
+    }
     const OSStatus err = MIDISendEventList(port, destination, list);
     std::printf("sent %zu message(s): %s\n", words.size(), err == noErr ? "ok" : "failed");
     usleep(200 * 1000);   // let CoreMIDI deliver before the client goes away
