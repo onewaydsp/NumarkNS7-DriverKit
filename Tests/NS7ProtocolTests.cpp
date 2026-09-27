@@ -678,6 +678,75 @@ static void test_fifo_read_empty_returns_zero()
     CHECK_EQ(f.Read(out, sizeof out), 0u);
 }
 
+static void test_queue_ump_channel_voice_as_raw_bytes()
+{
+    ByteFifo<64> f;
+    const uint32_t ump[] = { 0x20903C7Fu, 0x20C00500u };   // note on, program change
+    CHECK_EQ(QueueUmpAsRawMidi(ump, 2, f), 0u);
+    uint8_t out[8] = {};
+    CHECK_EQ(f.Read(out, sizeof out), 5u);
+    const uint8_t expect[] = { 0x90, 0x3C, 0x7F, 0xC0, 0x05 };
+    CHECK(memcmp(out, expect, 5) == 0);
+}
+
+static void test_queue_ump_sysex_as_raw_bytes()
+{
+    ByteFifo<64> f;
+    const uint32_t ump[] = { 0x30027E7Fu, 0x00000000u };   // complete SysEx, 2 bytes
+    CHECK_EQ(QueueUmpAsRawMidi(ump, 2, f), 0u);
+    uint8_t out[8] = {};
+    CHECK_EQ(f.Read(out, sizeof out), 4u);
+    const uint8_t expect[] = { 0xF0, 0x7E, 0x7F, 0xF7 };
+    CHECK(memcmp(out, expect, 4) == 0);
+}
+
+static void test_queue_ump_skips_unsupported_types()
+{
+    ByteFifo<64> f;
+    // MIDI 2.0 note on (type 4, two words), then a MIDI 1.0 note off.
+    const uint32_t ump[] = { 0x40903C00u, 0xFFFF0000u, 0x20803C00u };
+    CHECK_EQ(QueueUmpAsRawMidi(ump, 3, f), 0u);
+    uint8_t out[8] = {};
+    CHECK_EQ(f.Read(out, sizeof out), 3u);
+    const uint8_t expect[] = { 0x80, 0x3C, 0x00 };
+    CHECK(memcmp(out, expect, 3) == 0);
+}
+
+static void test_queue_ump_drops_whole_message_when_full()
+{
+    ByteFifo<4> f;
+    const uint32_t ump[] = { 0x20903C7Fu, 0x20903D7Fu };   // 3 bytes each, room for one
+    CHECK_EQ(QueueUmpAsRawMidi(ump, 2, f), 1u);
+    CHECK_EQ(f.Size(), 3u);
+}
+
+static void test_next_packet_takes_at_most_39_bytes()
+{
+    ByteFifo<64> f;
+    uint8_t in[50];
+    for (uint8_t i = 0; i < 50; i++) in[i] = i;
+    f.Write(in, 50);
+
+    uint8_t pkt[kMidiPacketBytes];
+    CHECK_EQ(NextMidiOutPacket(f, pkt), 39u);
+    CHECK(memcmp(pkt, in, 39) == 0);
+    CHECK_EQ(pkt[39], kMidiFill);
+    CHECK_EQ(pkt[40], kMidiFill);
+    CHECK_EQ(pkt[41], kMidiCPort);
+
+    CHECK_EQ(NextMidiOutPacket(f, pkt), 11u);
+    CHECK(memcmp(pkt, in + 39, 11) == 0);
+    CHECK_EQ(pkt[11], kMidiFill);
+    CHECK_EQ(pkt[41], kMidiCPort);
+}
+
+static void test_next_packet_empty_fifo_returns_zero()
+{
+    ByteFifo<64> f;
+    uint8_t pkt[kMidiPacketBytes];
+    CHECK_EQ(NextMidiOutPacket(f, pkt), 0u);
+}
+
 int main()
 {
     struct { const char * name; void (*fn)(); } tests[] = {
@@ -746,6 +815,12 @@ int main()
         T(test_fifo_rejects_message_that_does_not_fit_whole),
         T(test_fifo_rejects_write_larger_than_capacity),
         T(test_fifo_read_empty_returns_zero),
+        T(test_queue_ump_channel_voice_as_raw_bytes),
+        T(test_queue_ump_sysex_as_raw_bytes),
+        T(test_queue_ump_skips_unsupported_types),
+        T(test_queue_ump_drops_whole_message_when_full),
+        T(test_next_packet_takes_at_most_39_bytes),
+        T(test_next_packet_empty_fifo_returns_zero),
 #undef T
     };
     for (auto & t : tests) {

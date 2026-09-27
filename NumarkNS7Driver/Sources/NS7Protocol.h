@@ -424,6 +424,30 @@ private:
 constexpr uint32_t kMidiOutFifoBytes = 4096;
 typedef ByteFifo<kMidiOutFifoBytes> MidiOutFifo;
 
+// Converts UMP messages to raw MIDI 1.0 bytes and queues each message whole.
+// Types other than 1, 2 and 3 are skipped. Returns how many messages were
+// dropped because the FIFO had no room. Real-time safe: no locks, no allocation.
+template <uint32_t N>
+inline uint32_t QueueUmpAsRawMidi(const uint32_t * words, size_t count, ByteFifo<N> & fifo)
+{
+    struct Ctx { ByteFifo<N> * fifo; uint32_t dropped; } ctx = { &fifo, 0 };
+    UmpToRawMidi(words, count, [](void * c, const uint8_t * bytes, size_t n) {
+        auto * x = static_cast<Ctx *>(c);
+        if (!x->fifo->Write(bytes, uint32_t(n))) x->dropped++;
+    }, &ctx);
+    return ctx.dropped;
+}
+
+// Fills one EP 0x04 packet with up to 39 bytes from the FIFO. Returns the
+// number of MIDI bytes packed; 0 means the FIFO was empty and `pkt` is untouched.
+template <uint32_t N>
+inline uint32_t NextMidiOutPacket(ByteFifo<N> & fifo, uint8_t pkt[kMidiPacketBytes])
+{
+    uint8_t bytes[kMidiOutMaxBytes];
+    const uint32_t n = fifo.Read(bytes, kMidiOutMaxBytes);
+    return BuildMidiOutPacket(bytes, n, pkt);
+}
+
 // ── Ring buffer copies ───────────────────────────────────────────────────────
 
 inline void RingWrite(uint8_t * ring, uint32_t ringFrames, uint32_t frameBytes,
