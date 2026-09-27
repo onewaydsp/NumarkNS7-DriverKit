@@ -1,0 +1,6 @@
+# Resume run (--from deckA.bleepReverse): baseline, the switch, the sweep.
+---
+90 60 7F
+90 60 00
+---
+B0 77 40

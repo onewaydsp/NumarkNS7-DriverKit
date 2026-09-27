@@ -1,0 +1,36 @@
+# Self-test MIDI for `learn --replay`. One block per capture step, in order:
+# baseline, then each step the script answers, then the final sweep.
+# block 0: baseline (hands off) - a stray stream that must be ignored later
+B0 6F 01
+B0 6F 01
+---
+# block 1: deckA.play, first attempt (the script answers r = redo)
+90 11 7F
+---
+# block 2: deckA.play again: press + release, plus background noise
+90 11 7F
+B0 6F 01
+90 11 00
+---
+# block 3: deckA.pitchFader: 14-bit CC 04 (MSB) + CC 24 (LSB), min to max
+B0 04 00 B0 24 00
+B0 04 20 B0 24 10
+B0 04 40 B0 24 20
+B0 04 60 B0 24 30
+B0 04 7F B0 24 7F
+---
+# block 4: deckA.platterRotation: CC 00 stream + pitch bend, forward then back
+B0 00 01 E0 00 40
+B0 00 02 E0 10 40
+B0 00 03 E0 20 40
+B0 00 02 E0 10 40
+B0 00 01 E0 00 40
+---
+# block 5: deckA.bleepReverse - nothing (the script skips it)
+---
+# block 6: browse.scrollKnob: relative encoder, two's complement
+B0 50 01 B0 50 01 B0 50 01 B0 50 7F B0 50 7F
+---
+# block 7: final sweep: a known key plus one nobody owns
+90 11 7F 90 11 00
+B0 77 40

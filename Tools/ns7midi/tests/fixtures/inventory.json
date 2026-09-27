@@ -1,0 +1,31 @@
+{
+  "schema": "ns7-controls/1",
+  "device": "self-test fixture (not real NS7 data)",
+  "sections": [
+    {"id": "deckA", "label": "Deck A"},
+    {"id": "browse", "label": "Browse"},
+    {"id": "mixer", "label": "Mixer"},
+    {"id": "rear", "label": "Rear panel"}
+  ],
+  "controls": [
+    {"id": "deckA.play", "section": "deckA", "label": "Play (Deck A)", "kind": "button+led",
+     "instruction": "press and release", "midi_expected": true,
+     "expected_input": [{"status": "90", "data1": "11", "source": "mixxx", "verified": false}],
+     "expected_led": [{"status": "B0", "data1": "09", "on": "7F", "off": "00", "source": "mixxx", "verified": false}],
+     "uncertain": false},
+    {"id": "deckA.pitchFader", "section": "deckA", "label": "Pitch fader (Deck A)", "kind": "fader",
+     "midi_expected": true, "expected_input": [{"status": "B0", "data1": "04", "source": "mixxx", "verified": false}],
+     "expected_led": [], "uncertain": false},
+    {"id": "deckA.platterRotation", "section": "deckA", "label": "Platter (Deck A)", "kind": "platter",
+     "midi_expected": true, "expected_input": [], "expected_led": [], "uncertain": false},
+    {"id": "deckA.bleepReverse", "section": "deckA", "label": "Bleep/Reverse (Deck A)", "kind": "switch",
+     "midi_expected": true, "expected_input": [], "expected_led": [], "uncertain": true},
+    {"id": "browse.scrollKnob", "section": "browse", "label": "Scroll knob", "kind": "encoder",
+     "midi_expected": true, "expected_input": [], "expected_led": [], "uncertain": false},
+    {"id": "mixer.ledMeters", "section": "mixer", "label": "Level meters", "kind": "led",
+     "midi_expected": false, "expected_input": [],
+     "expected_led": [{"status": "B0", "data1": "36", "source": "mixxx", "verified": false}], "uncertain": false},
+    {"id": "rear.power", "section": "rear", "label": "Power switch", "kind": "switch",
+     "midi_expected": false, "expected_input": [], "expected_led": [], "uncertain": false}
+  ]
+}

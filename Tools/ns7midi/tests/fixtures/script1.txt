@@ -1,0 +1,17 @@
+# Answers for learn --script, one per line. Empty line = Enter (accept).
+# deckA.play, first attempt: redo
+r
+# deckA.play, second attempt: accept
+accept
+# LED check for deckA.play (--leds): y = it lit
+y
+# deckA.pitchFader
+accept
+# deckA.platterRotation (empty line = Enter)
+
+# deckA.bleepReverse: skip
+s
+# browse.scrollKnob
+
+# final sweep
+

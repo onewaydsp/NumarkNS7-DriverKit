@@ -1,0 +1,4 @@
+deckA.play
+r
+
+q
