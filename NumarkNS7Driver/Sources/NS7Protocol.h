@@ -424,22 +424,81 @@ private:
 constexpr uint32_t kMidiOutFifoBytes = 4096;
 typedef ByteFifo<kMidiOutFifoBytes> MidiOutFifo;
 
+// Per-destination state for QueueUmpAsRawMidi, kept across calls because
+// CoreMIDI may split one SysEx across IO-block invocations. Valid when zero.
+struct UmpOutState {
+    bool sysExOpen;     // a SysEx start reached the FIFO and its end has not
+    bool pendingF7;     // a SysEx was cut short; F7 must be queued before anything else
+};
+
 // Converts UMP messages to raw MIDI 1.0 bytes and queues each message whole.
-// Types other than 1, 2 and 3 are skipped. Returns how many messages were
-// dropped because the FIFO had no room. Real-time safe: no locks, no allocation.
+// Types other than 1, 2 and 3 are skipped. Returns how many 64-bit UMP packets
+// were dropped because the FIFO had no room (a SysEx counts per packet, not
+// per whole message); a trailing partial UMP (too few words for its type) is
+// ignored and not counted. Dropping a SysEx start drops the rest of that
+// SysEx too, so no orphan data bytes reach the device; a SysEx cut short
+// part-way through is terminated with F7 as soon as room allows, so the
+// device is never left waiting inside a SysEx. Real-time safe: no locks, no
+// allocation.
 template <uint32_t N>
-inline uint32_t QueueUmpAsRawMidi(const uint32_t * words, size_t count, ByteFifo<N> & fifo)
+inline uint32_t QueueUmpAsRawMidi(const uint32_t * words, size_t count, ByteFifo<N> & fifo,
+                                  UmpOutState & state)
 {
-    struct Ctx { ByteFifo<N> * fifo; uint32_t dropped; } ctx = { &fifo, 0 };
+    struct Ctx { ByteFifo<N> * fifo; UmpOutState * state; uint32_t dropped; };
+    Ctx ctx = { &fifo, &state, 0 };
     UmpToRawMidi(words, count, [](void * c, const uint8_t * bytes, size_t n) {
         auto * x = static_cast<Ctx *>(c);
-        if (!x->fifo->Write(bytes, uint32_t(n))) x->dropped++;
+        UmpOutState & st = *x->state;
+
+        if (st.pendingF7) {
+            const uint8_t f7 = 0xF7;
+            if (x->fifo->Write(&f7, 1)) st.pendingF7 = false;
+            else { x->dropped++; return; }
+        }
+
+        const bool isStart       = bytes[0] == 0xF0;
+        const bool isSysExPiece  = isStart || bytes[0] < 0x80;
+        const bool isEnd         = bytes[n - 1] == 0xF7;
+
+        if (!isSysExPiece) {
+            if (!x->fifo->Write(bytes, uint32_t(n))) x->dropped++;
+            return;
+        }
+
+        if (isStart) {
+            if (x->fifo->Write(bytes, uint32_t(n))) {
+                st.sysExOpen = !isEnd;
+            } else {
+                x->dropped++;
+                st.sysExOpen = false;
+            }
+            return;
+        }
+
+        // SysEx continue/end piece.
+        if (!st.sysExOpen) {
+            x->dropped++;   // orphan left over from a dropped start; never queue it
+            return;
+        }
+        if (x->fifo->Write(bytes, uint32_t(n))) {
+            if (isEnd) st.sysExOpen = false;
+        } else {
+            x->dropped++;
+            st.sysExOpen = false;
+            st.pendingF7 = true;
+            const uint8_t f7 = 0xF7;
+            if (x->fifo->Write(&f7, 1)) st.pendingF7 = false;
+        }
     }, &ctx);
     return ctx.dropped;
 }
 
 // Fills one EP 0x04 packet with up to 39 bytes from the FIFO. Returns the
 // number of MIDI bytes packed; 0 means the FIFO was empty and `pkt` is untouched.
+// Packets deliberately split the byte stream at 39 bytes without regard to
+// MIDI message boundaries: the device parses EP 0x04 as a continuous MIDI
+// byte stream, as the original Ploytec driver did, so a message may span two
+// packets.
 template <uint32_t N>
 inline uint32_t NextMidiOutPacket(ByteFifo<N> & fifo, uint8_t pkt[kMidiPacketBytes])
 {

@@ -681,8 +681,9 @@ static void test_fifo_read_empty_returns_zero()
 static void test_queue_ump_channel_voice_as_raw_bytes()
 {
     ByteFifo<64> f;
+    UmpOutState st = {};
     const uint32_t ump[] = { 0x20903C7Fu, 0x20C00500u };   // note on, program change
-    CHECK_EQ(QueueUmpAsRawMidi(ump, 2, f), 0u);
+    CHECK_EQ(QueueUmpAsRawMidi(ump, 2, f, st), 0u);
     uint8_t out[8] = {};
     CHECK_EQ(f.Read(out, sizeof out), 5u);
     const uint8_t expect[] = { 0x90, 0x3C, 0x7F, 0xC0, 0x05 };
@@ -692,8 +693,9 @@ static void test_queue_ump_channel_voice_as_raw_bytes()
 static void test_queue_ump_sysex_as_raw_bytes()
 {
     ByteFifo<64> f;
+    UmpOutState st = {};
     const uint32_t ump[] = { 0x30027E7Fu, 0x00000000u };   // complete SysEx, 2 bytes
-    CHECK_EQ(QueueUmpAsRawMidi(ump, 2, f), 0u);
+    CHECK_EQ(QueueUmpAsRawMidi(ump, 2, f, st), 0u);
     uint8_t out[8] = {};
     CHECK_EQ(f.Read(out, sizeof out), 4u);
     const uint8_t expect[] = { 0xF0, 0x7E, 0x7F, 0xF7 };
@@ -703,9 +705,10 @@ static void test_queue_ump_sysex_as_raw_bytes()
 static void test_queue_ump_skips_unsupported_types()
 {
     ByteFifo<64> f;
+    UmpOutState st = {};
     // MIDI 2.0 note on (type 4, two words), then a MIDI 1.0 note off.
     const uint32_t ump[] = { 0x40903C00u, 0xFFFF0000u, 0x20803C00u };
-    CHECK_EQ(QueueUmpAsRawMidi(ump, 3, f), 0u);
+    CHECK_EQ(QueueUmpAsRawMidi(ump, 3, f, st), 0u);
     uint8_t out[8] = {};
     CHECK_EQ(f.Read(out, sizeof out), 3u);
     const uint8_t expect[] = { 0x80, 0x3C, 0x00 };
@@ -715,9 +718,90 @@ static void test_queue_ump_skips_unsupported_types()
 static void test_queue_ump_drops_whole_message_when_full()
 {
     ByteFifo<4> f;
+    UmpOutState st = {};
     const uint32_t ump[] = { 0x20903C7Fu, 0x20903D7Fu };   // 3 bytes each, room for one
-    CHECK_EQ(QueueUmpAsRawMidi(ump, 2, f), 1u);
+    CHECK_EQ(QueueUmpAsRawMidi(ump, 2, f, st), 1u);
     CHECK_EQ(f.Size(), 3u);
+}
+
+// SysEx UMP words used below: start(2), continue(2), end(2) forming a single
+// 14-byte SysEx (F0 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E F7, 16 bytes).
+static const uint32_t kSysExStart[2]    = { 0x30160102u, 0x03040506u };   // kind 1, 6 bytes: 01..06
+static const uint32_t kSysExContinue[2] = { 0x30260708u, 0x090A0B0Cu };   // kind 2, 6 bytes: 07..0C
+static const uint32_t kSysExEnd[2]      = { 0x30320D0Eu, 0x00000000u };  // kind 3, 2 bytes: 0D 0E
+
+static void test_queue_ump_multi_packet_sysex_fits()
+{
+    ByteFifo<64> f;
+    UmpOutState st = {};
+    uint32_t ump[6];
+    memcpy(ump,     kSysExStart,    sizeof kSysExStart);
+    memcpy(ump + 2, kSysExContinue, sizeof kSysExContinue);
+    memcpy(ump + 4, kSysExEnd,      sizeof kSysExEnd);
+    CHECK_EQ(QueueUmpAsRawMidi(ump, 6, f, st), 0u);
+    uint8_t out[16] = {};
+    CHECK_EQ(f.Read(out, sizeof out), 16u);
+    const uint8_t expect[16] = { 0xF0, 1,2,3,4,5,6, 7,8,9,0xA,0xB,0xC, 0xD,0xE, 0xF7 };
+    CHECK(memcmp(out, expect, 16) == 0);
+}
+
+static void test_queue_ump_dropped_sysex_start_drops_rest()
+{
+    ByteFifo<8> f;
+    UmpOutState st = {};
+    const uint8_t filler[4] = { 0xAA, 0xAA, 0xAA, 0xAA };
+    CHECK(f.Write(filler, 4));          // only 4 bytes free; a 7-byte start won't fit
+
+    uint32_t ump[6];
+    memcpy(ump,     kSysExStart,    sizeof kSysExStart);
+    memcpy(ump + 2, kSysExContinue, sizeof kSysExContinue);
+    memcpy(ump + 4, kSysExEnd,      sizeof kSysExEnd);
+    CHECK_EQ(QueueUmpAsRawMidi(ump, 6, f, st), 3u);   // all three pieces dropped
+    CHECK_EQ(f.Size(), 4u);                            // no orphan bytes queued
+
+    const uint32_t noteOff[] = { 0x20903C7Fu };
+    CHECK_EQ(QueueUmpAsRawMidi(noteOff, 1, f, st), 0u);   // unrelated message still queues fine
+    CHECK_EQ(f.Size(), 7u);
+}
+
+static void test_queue_ump_sysex_cut_short_is_terminated()
+{
+    ByteFifo<8> f;
+    UmpOutState st = {};
+    uint32_t ump[6];
+    memcpy(ump,     kSysExStart,    sizeof kSysExStart);
+    memcpy(ump + 2, kSysExContinue, sizeof kSysExContinue);
+    memcpy(ump + 4, kSysExEnd,      sizeof kSysExEnd);
+    // start (7 bytes) fits; continue (6 bytes) doesn't (1 byte free) and is
+    // replaced by a terminating F7; end arrives as an orphan and is dropped.
+    CHECK_EQ(QueueUmpAsRawMidi(ump, 6, f, st), 2u);
+    CHECK_EQ(f.Size(), 8u);
+    uint8_t out[8] = {};
+    CHECK_EQ(f.Read(out, sizeof out), 8u);
+    const uint8_t expect[8] = { 0xF0, 1,2,3,4,5,6, 0xF7 };
+    CHECK(memcmp(out, expect, 8) == 0);
+}
+
+static void test_queue_ump_state_spans_calls()
+{
+    ByteFifo<64> f;
+    UmpOutState st = {};
+    CHECK_EQ(QueueUmpAsRawMidi(kSysExStart, 2, f, st), 0u);
+    CHECK_EQ(QueueUmpAsRawMidi(kSysExContinue, 2, f, st), 0u);
+    CHECK_EQ(QueueUmpAsRawMidi(kSysExEnd, 2, f, st), 0u);
+    uint8_t out[16] = {};
+    CHECK_EQ(f.Read(out, sizeof out), 16u);
+    const uint8_t expect[16] = { 0xF0, 1,2,3,4,5,6, 7,8,9,0xA,0xB,0xC, 0xD,0xE, 0xF7 };
+    CHECK(memcmp(out, expect, 16) == 0);
+}
+
+static void test_queue_ump_trailing_partial_ump_ignored()
+{
+    ByteFifo<64> f;
+    UmpOutState st = {};
+    const uint32_t ump[] = { 0x30160102u };   // SysEx start needs a second word
+    CHECK_EQ(QueueUmpAsRawMidi(ump, 1, f, st), 0u);
+    CHECK_EQ(f.Size(), 0u);
 }
 
 static void test_next_packet_takes_at_most_39_bytes()
@@ -744,7 +828,9 @@ static void test_next_packet_empty_fifo_returns_zero()
 {
     ByteFifo<64> f;
     uint8_t pkt[kMidiPacketBytes];
+    memset(pkt, 0xAA, sizeof pkt);
     CHECK_EQ(NextMidiOutPacket(f, pkt), 0u);
+    for (uint32_t i = 0; i < kMidiPacketBytes; i++) CHECK_EQ(pkt[i], 0xAA);
 }
 
 int main()
@@ -819,6 +905,11 @@ int main()
         T(test_queue_ump_sysex_as_raw_bytes),
         T(test_queue_ump_skips_unsupported_types),
         T(test_queue_ump_drops_whole_message_when_full),
+        T(test_queue_ump_multi_packet_sysex_fits),
+        T(test_queue_ump_dropped_sysex_start_drops_rest),
+        T(test_queue_ump_sysex_cut_short_is_terminated),
+        T(test_queue_ump_state_spans_calls),
+        T(test_queue_ump_trailing_partial_ump_ignored),
         T(test_next_packet_takes_at_most_39_bytes),
         T(test_next_packet_empty_fifo_returns_zero),
 #undef T
