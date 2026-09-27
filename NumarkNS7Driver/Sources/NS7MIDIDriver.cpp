@@ -44,6 +44,11 @@ struct NS7MIDIDriver_IVars
     bool                    deviceAdded;      // AddObject(device) succeeded
     bool                    detached;         // __atomic: set in Stop; IO block then ignores output
     uint32_t                midiOutDropped;   // __atomic: messages dropped, FIFO full
+    // Diagnostics, __atomic, cumulative (wrap at 2^32): IO block invocations,
+    // UMP words it was handed, and the first word of the latest call.
+    uint32_t                ioBlockCalls;
+    uint32_t                ioBlockWords;
+    uint32_t                ioBlockLastWord;
     uint32_t                sendErrors;       // USB queue only
     NS7::UmpOutState        midiOutState;     // real-time thread only; SysEx framing across calls
     NS7::MidiOutFifo        midiOut;
@@ -150,6 +155,11 @@ CreateMidiObjects(NS7MIDIDriver * self, NS7MIDIDriver_IVars * iv)
     // ivars and the FIFO stay valid until free(). Nothing here protects
     // against a call after free().
     ret = iv->destination->SetIOBlock(^kern_return_t(const IOUserMIDIUMPWord * words, size_t numWords) {
+        // Counted before the detached check so a hardware log shows whether
+        // MIDIDriverKit ever calls this block at all.
+        __atomic_fetch_add(&iv->ioBlockCalls, 1, __ATOMIC_RELAXED);
+        __atomic_fetch_add(&iv->ioBlockWords, uint32_t(numWords), __ATOMIC_RELAXED);
+        if (words && numWords) __atomic_store_n(&iv->ioBlockLastWord, words[0], __ATOMIC_RELAXED);
         if (__atomic_load_n(&iv->detached, __ATOMIC_ACQUIRE)) return kIOReturnSuccess;
         const uint32_t dropped = NS7::QueueUmpAsRawMidi(words, numWords, iv->midiOut, iv->midiOutState);
         if (dropped) __atomic_fetch_add(&iv->midiOutDropped, dropped, __ATOMIC_RELAXED);
@@ -278,4 +288,14 @@ uint32_t
 NS7MIDIDriver::TakeMidiOutDropped()
 {
     return __atomic_exchange_n(&ivars->midiOutDropped, 0, __ATOMIC_RELAXED);
+}
+
+void
+NS7MIDIDriver::GetMidiOutBlockStats(uint32_t * calls, uint32_t * words, uint32_t * bytesQueued,
+                                    uint32_t * lastWord)
+{
+    if (calls)       *calls       = __atomic_load_n(&ivars->ioBlockCalls, __ATOMIC_RELAXED);
+    if (words)       *words       = __atomic_load_n(&ivars->ioBlockWords, __ATOMIC_RELAXED);
+    if (bytesQueued) *bytesQueued = ivars->midiOut.BytesWritten();
+    if (lastWord)    *lastWord    = __atomic_load_n(&ivars->ioBlockLastWord, __ATOMIC_RELAXED);
 }

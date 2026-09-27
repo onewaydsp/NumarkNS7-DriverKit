@@ -678,6 +678,19 @@ static void test_fifo_read_empty_returns_zero()
     CHECK_EQ(f.Read(out, sizeof out), 0u);
 }
 
+static void test_fifo_bytes_written_counts_accepted_writes_only()
+{
+    ByteFifo<8> f;
+    CHECK_EQ(f.BytesWritten(), 0u);
+    const uint8_t six[6] = {}, three[3] = {};
+    CHECK(f.Write(six, 6));
+    CHECK(!f.Write(three, 3));      // rejected: not counted
+    uint8_t out[8];
+    f.Read(out, sizeof out);        // reading does not change it
+    CHECK(f.Write(three, 3));
+    CHECK_EQ(f.BytesWritten(), 9u);
+}
+
 static void test_queue_ump_channel_voice_as_raw_bytes()
 {
     ByteFifo<64> f;
@@ -994,6 +1007,7 @@ int main()
         T(test_fifo_rejects_message_that_does_not_fit_whole),
         T(test_fifo_rejects_write_larger_than_capacity),
         T(test_fifo_read_empty_returns_zero),
+        T(test_fifo_bytes_written_counts_accepted_writes_only),
         T(test_queue_ump_channel_voice_as_raw_bytes),
         T(test_queue_ump_sysex_as_raw_bytes),
         T(test_queue_ump_skips_unsupported_types),

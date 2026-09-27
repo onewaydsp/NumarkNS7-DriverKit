@@ -392,6 +392,13 @@ public:
         return mHead.load(std::memory_order_acquire) - mTail.load(std::memory_order_acquire);
     }
 
+    // Total bytes ever written, wrapping at 2^32. For diagnostics; any thread
+    // may read it (the value may be slightly stale).
+    uint32_t BytesWritten() const
+    {
+        return mHead.load(std::memory_order_relaxed);
+    }
+
     // Producer side. Returns false, writing nothing, if `n` bytes do not fit.
     bool Write(const uint8_t * data, uint32_t n)
     {

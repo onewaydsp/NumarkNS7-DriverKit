@@ -38,6 +38,12 @@ public:
     // Returns the number of CoreMIDI output messages dropped because the FIFO
     // was full since the last call, and resets it.
     uint32_t TakeMidiOutDropped() LOCALONLY;
+
+    // Diagnostics, cumulative since Start and wrapping at 2^32: destination
+    // IO block calls, UMP words received, raw MIDI bytes queued into the
+    // FIFO, and the first UMP word of the latest call. Null pointers are skipped.
+    void GetMidiOutBlockStats(uint32_t * calls, uint32_t * words, uint32_t * bytesQueued,
+                              uint32_t * lastWord) LOCALONLY;
 };
 
 #endif /* NS7MIDIDriver_h */

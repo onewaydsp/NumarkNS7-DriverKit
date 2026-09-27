@@ -116,6 +116,8 @@ struct NumarkNS7Device_IVars
     uint64_t  midiOutBytes = 0;
     uint64_t  midiOutLost = 0;      // packets dropped after exhausting STALL retries
     uint64_t  midiOutDropped = 0;   // messages CoreMIDI queued that did not fit the FIFO
+    uint64_t  midiOutPumpClient = 0;    // PumpMidiOut calls that found a MIDI client
+    uint64_t  midiOutPumpBytes = 0;     // ... and got bytes to send
     uint32_t  midiLogged = 0;       // reset with each stats line
     IOLock        * midiClientLock = nullptr;
     NS7MIDIDriver * midiClient = nullptr;       // guarded by midiClientLock, retained
@@ -426,24 +428,32 @@ CopyMidiClient(NumarkNS7Device_IVars * iv)
     return client;
 }
 
-// Runs on the USB queue.
+// Runs on the USB queue. Two short lines, since os_log cuts long ones off.
 static void
 LogStats(NumarkNS7Device_IVars * iv)
 {
-    if (NS7MIDIDriver * client = CopyMidiClient(iv)) {
+    // IO block counters, from the CoreMIDI destination: calls, UMP words in,
+    // raw bytes queued into the FIFO, first word of the latest call.
+    uint32_t blkCalls = 0, blkWords = 0, blkBytes = 0, blkLast = 0;
+    NS7MIDIDriver * client = CopyMidiClient(iv);
+    const bool haveClient = client != nullptr;
+    if (client) {
         iv->midiOutDropped += client->TakeMidiOutDropped();
+        client->GetMidiOutBlockStats(&blkCalls, &blkWords, &blkBytes, &blkLast);
         client->release();
     }
     const PipeStats & p = iv->stats[kPipePlayback], & f = iv->stats[kPipeFeedback],
                     & c = iv->stats[kPipeCapture],  & m = iv->stats[kPipeMidiIn];
     const PipeStats & o = iv->stats[kPipeMidiOut];
-    Log("stats: playback %llu (%llu err, %llu resync) | feedback %llu pkts, %d frames/ms "
-        "(%llu err, %llu resync) | capture %llu B (%llu err, %llu stall) | "
-        "MIDI in %llu xfers, %llu msgs (%llu err, %llu stall) | "
-        "MIDI out %llu pkts, %llu B (%llu err, %llu stall, %llu pkts lost, %llu msgs dropped)",
+    Log("stats: play %llu (%llu err, %llu rs) | fb %llu, %d f/ms (%llu err, %llu rs) | "
+        "cap %llu B (%llu err, %llu st) | MIDI in %llu xf, %llu msg (%llu err, %llu st)",
         p.done, p.errors, p.resyncs, iv->feedbackPackets, iv->feedbackFrames, f.errors, f.resyncs,
-        iv->captureBytes, c.errors, c.stalls, m.done, iv->midiMessages, m.errors, m.stalls,
-        o.done, iv->midiOutBytes, o.errors, o.stalls, iv->midiOutLost, iv->midiOutDropped);
+        iv->captureBytes, c.errors, c.stalls, m.done, iv->midiMessages, m.errors, m.stalls);
+    Log("MIDI out: %llu pkt %llu B %llu err %llu st %llu lost %llu drop | blk %u call %u w "
+        "%u B last %08x | pump %llu cl %llu data | len %u bo %u reg %d",
+        o.done, iv->midiOutBytes, o.errors, o.stalls, iv->midiOutLost, iv->midiOutDropped,
+        blkCalls, blkWords, blkBytes, blkLast, iv->midiOutPumpClient, iv->midiOutPumpBytes,
+        iv->midiOutLength, iv->midiOutBackoffTicks, haveClient ? 1 : 0);
     if (iv->midiLogged > kLoggedMidiPerStats)
         Log("%u MIDI messages not logged", iv->midiLogged - kLoggedMidiPerStats);
     iv->midiLogged = 0;
@@ -505,9 +515,11 @@ PumpMidiOut(NumarkNS7Device_IVars * iv)
     if (iv->midiOutBackoffTicks > 0) return;
     NS7MIDIDriver * client = CopyMidiClient(iv);
     if (client == nullptr) return;
+    iv->midiOutPumpClient++;
     const uint32_t n = client->NextMidiOutPacket(iv->midiOut.ptr);
     client->release();
     if (n == 0) return;
+    iv->midiOutPumpBytes++;
     iv->midiOutLength = n;
     iv->midiOutRetries = 0;
     SendMidiOut(iv);
