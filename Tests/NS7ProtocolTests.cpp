@@ -607,6 +607,64 @@ static void test_real_split_pitch_bend_reassembles()
     }
 }
 
+// ── MIDI out FIFO ────────────────────────────────────────────────────────────
+
+static void test_fifo_read_returns_written_bytes_in_order()
+{
+    ByteFifo<16> f;
+    const uint8_t in[] = { 0x90, 0x3C, 0x7F };
+    CHECK(f.Write(in, 3));
+    CHECK_EQ(f.Size(), 3u);
+    uint8_t out[8] = {};
+    CHECK_EQ(f.Read(out, sizeof out), 3u);
+    CHECK(memcmp(in, out, 3) == 0);
+    CHECK_EQ(f.Size(), 0u);
+}
+
+static void test_fifo_read_respects_max_and_keeps_rest()
+{
+    ByteFifo<16> f;
+    const uint8_t in[] = { 1, 2, 3, 4, 5 };
+    f.Write(in, 5);
+    uint8_t out[5] = {};
+    CHECK_EQ(f.Read(out, 2), 2u);
+    CHECK_EQ(out[0], 1); CHECK_EQ(out[1], 2);
+    CHECK_EQ(f.Read(out, 5), 3u);
+    CHECK_EQ(out[0], 3); CHECK_EQ(out[2], 5);
+}
+
+static void test_fifo_wraps_around()
+{
+    ByteFifo<8> f;
+    uint8_t next = 0, expect = 0;
+    for (int round = 0; round < 50; round++) {
+        uint8_t in[5];
+        for (auto & b : in) b = next++;
+        CHECK(f.Write(in, 5));
+        uint8_t out[5] = {};
+        CHECK_EQ(f.Read(out, 5), 5u);
+        for (auto b : out) CHECK_EQ(b, expect++);
+    }
+}
+
+static void test_fifo_rejects_message_that_does_not_fit_whole()
+{
+    ByteFifo<8> f;
+    const uint8_t six[6] = { 1, 2, 3, 4, 5, 6 }, three[3] = { 7, 8, 9 };
+    CHECK(f.Write(six, 6));
+    CHECK(!f.Write(three, 3));      // only 2 bytes free
+    CHECK_EQ(f.Size(), 6u);         // nothing partial was written
+    CHECK(f.Write(three, 2));       // 2 bytes still fit
+    CHECK_EQ(f.Size(), 8u);
+}
+
+static void test_fifo_read_empty_returns_zero()
+{
+    ByteFifo<8> f;
+    uint8_t out[4];
+    CHECK_EQ(f.Read(out, sizeof out), 0u);
+}
+
 int main()
 {
     struct { const char * name; void (*fn)(); } tests[] = {
@@ -669,6 +727,11 @@ int main()
         T(test_iso_frame_kept_when_still_in_future),
         T(test_iso_frame_resyncs_when_due_or_past),
         T(test_real_split_pitch_bend_reassembles),
+        T(test_fifo_read_returns_written_bytes_in_order),
+        T(test_fifo_read_respects_max_and_keeps_rest),
+        T(test_fifo_wraps_around),
+        T(test_fifo_rejects_message_that_does_not_fit_whole),
+        T(test_fifo_read_empty_returns_zero),
 #undef T
     };
     for (auto & t : tests) {

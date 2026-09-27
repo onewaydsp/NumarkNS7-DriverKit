@@ -7,6 +7,7 @@
 #define NS7Protocol_h
 
 #include <stddef.h>
+#include <atomic>
 #include <stdint.h>
 #include <string.h>
 
@@ -372,6 +373,55 @@ inline void UmpToRawMidi(const uint32_t * w, size_t count, BytesCallback cb, voi
         i += len;
     }
 }
+
+// ── MIDI out FIFO ────────────────────────────────────────────────────────────
+
+// Single-producer/single-consumer byte ring. For MIDI out the producer is
+// CoreMIDI's real-time thread and the consumer the USB queue. Writes are
+// all-or-nothing so a MIDI message is never split by a full buffer. Indices
+// run free and wrap at 2^32; N must be a power of two. A zero-filled object
+// is a valid empty FIFO (the dext allocates it with IONewZero).
+template <uint32_t N>
+class ByteFifo {
+    static_assert(N != 0 && (N & (N - 1)) == 0, "N must be a power of two");
+
+public:
+    uint32_t Size() const
+    {
+        return mHead.load(std::memory_order_acquire) - mTail.load(std::memory_order_acquire);
+    }
+
+    // Producer side. Returns false, writing nothing, if `n` bytes do not fit.
+    bool Write(const uint8_t * data, uint32_t n)
+    {
+        const uint32_t head = mHead.load(std::memory_order_relaxed);
+        const uint32_t tail = mTail.load(std::memory_order_acquire);
+        if (n > N - (head - tail)) return false;
+        for (uint32_t i = 0; i < n; i++) mBuf[(head + i) & (N - 1)] = data[i];
+        mHead.store(head + n, std::memory_order_release);
+        return true;
+    }
+
+    // Consumer side. Copies up to `max` bytes out; returns the count.
+    uint32_t Read(uint8_t * out, uint32_t max)
+    {
+        const uint32_t tail = mTail.load(std::memory_order_relaxed);
+        const uint32_t head = mHead.load(std::memory_order_acquire);
+        uint32_t n = head - tail;
+        if (n > max) n = max;
+        for (uint32_t i = 0; i < n; i++) out[i] = mBuf[(tail + i) & (N - 1)];
+        mTail.store(tail + n, std::memory_order_release);
+        return n;
+    }
+
+private:
+    std::atomic<uint32_t> mHead { 0 };
+    std::atomic<uint32_t> mTail { 0 };
+    uint8_t               mBuf[N];
+};
+
+constexpr uint32_t kMidiOutFifoBytes = 4096;
+typedef ByteFifo<kMidiOutFifoBytes> MidiOutFifo;
 
 // ── Ring buffer copies ───────────────────────────────────────────────────────
 
