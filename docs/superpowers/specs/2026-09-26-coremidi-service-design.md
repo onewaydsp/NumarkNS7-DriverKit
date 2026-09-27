@@ -28,10 +28,11 @@ Two IOService classes run in the same dext process (same `IOUserServerName`):
 | `NumarkNS7Device` (exists) | `IOService` | `IOUSBHostDevice` 0x15E4/0x0071 | USB: handshake, all pipes, MIDI-in parsing, MIDI-out packets on EP 0x04 |
 | `NS7MIDIDriver` (new) | `IOUserMIDIDriver` | `NumarkNS7Device` (new personality) | CoreMIDI: device, entity, source, destination |
 
-The two talk only through `LOCALONLY` methods on `NumarkNS7Device`:
+The two talk only through `LOCALONLY` methods (plain types, so iig never has to parse `NS7Protocol.h`):
 
-- `SetMidiInHandler(handler, context)`: installs a handler for incoming MIDI; `(nullptr, nullptr)` removes it. The handler is called on the USB queue with complete UMP words.
-- `MidiOutQueue()`: returns the lock-free byte FIFO that feeds EP 0x04 (see below).
+- `NumarkNS7Device::SetMidiClient(NS7MIDIDriver *)` registers the MIDI driver (retained), and `nullptr` unregisters it. The pointer is guarded by an `IOLock`; the USB side takes a retained copy per use.
+- `NS7MIDIDriver::DeliverMidiIn(const uint32_t * words, uint32_t count)` is called on the USB queue with complete UMP messages.
+- `NS7MIDIDriver::NextMidiOutPacket(uint8_t * packet)` is called on the USB queue. It fills one 42-byte EP 0x04 packet from the FIFO, which `NS7MIDIDriver` owns, and returns how many MIDI bytes it packed (0 = nothing to send).
 
 The new personality needs `IOUserMIDIDriverUserClientProperties` (IOClass `IOUserUserClient`, IOUserClass `IOUserMIDIDriverUserClient`), as the MIDIDriverKit headers require. The dext already has the `com.apple.developer.driverkit.family.midi` entitlement.
 
@@ -53,17 +54,17 @@ The driver reads the strings from the USB device at runtime. It falls back to th
 
 ### MIDI in (NS7 → CoreMIDI)
 
-1. `MidiInComplete` (USB queue): `ExtractMidiIn` → `RawMidiToUmp::Push` → handler.
-2. The `NS7MIDIDriver` handler drops words unless CoreMIDI I/O has started (`StartIO` / `StopIO` on the `IOUserMIDIDevice`). Otherwise it calls `IOUserMIDISource::Send(words, n)`.
+1. `MidiInComplete` (USB queue): `ExtractMidiIn` → `RawMidiToUmp::Push` → `client->DeliverMidiIn`.
+2. `DeliverMidiIn` drops words unless CoreMIDI I/O has started (`StartIO` / `StopIO` on the `IOUserMIDIDevice`). Otherwise it calls `IOUserMIDISource::Send(words, n)`.
 3. The MIDI-in parser state persists across transfers; messages split across packets are already handled and tested.
 
-Open question, to be checked on hardware: whether `Send()` is safe to call from the USB queue rather than the MIDI driver's work queue. If it isn't, the handler moves each transfer's words onto `GetWorkQueue()` with one async dispatch per USB transfer.
+Open question, to be checked on hardware: whether `Send()` is safe to call from the USB queue rather than the MIDI driver's work queue. If it isn't, `DeliverMidiIn` moves each transfer's words onto `GetWorkQueue()` with one async dispatch per USB transfer.
 
 ### MIDI out (CoreMIDI → NS7)
 
 1. The destination IO block (CoreMIDI real-time thread, which must not block or allocate) converts each UMP message with `UmpToRawMidi` and writes it into `MidiOutFifo`, **the whole message or nothing**.
 2. `MidiOutFifo` is a single-producer/single-consumer byte ring of 4096 bytes. It uses atomic read and write indices and lives in `NS7Protocol.h`, so it is unit-tested.
-3. The USB queue drains the FIFO. When no OUT transfer is in flight and bytes are waiting, it takes up to 39 bytes, calls `BuildMidiOutPacket` (42 bytes, `0xFD` fill, `0xE0` C-port) and runs `AsyncIO` on EP 0x04. On completion it sends the next packet straight away if more bytes are waiting, like the kext.
+3. The USB queue drains the FIFO. When no OUT transfer is in flight, it calls `NextMidiOutPacket`, which takes up to 39 bytes and calls `BuildMidiOutPacket` (42 bytes, `0xFD` fill, `0xE0` C-port). If that returns bytes, it runs `AsyncIO` on EP 0x04. On completion it sends the next packet straight away if more bytes are waiting, like the kext.
 4. The chain is started from `FeedbackComplete`, which runs every ~4 ms. A write therefore waits at most ~4 ms before its first packet goes out. No extra timer.
 
 ## Error handling
@@ -74,8 +75,8 @@ Open question, to be checked on hardware: whether `Send()` is safe to call from 
 | EP 0x04 STALL | `ClearStall(true)`, resend the same packet |
 | EP 0x04 other error | drop the packet, count the error, continue with the next one |
 | Aborted or stopping | no resubmit (existing `stopping` flag) |
-| `NumarkNS7Device::Stop` | clear the MIDI-in handler first, stop draining |
-| `NS7MIDIDriver::Stop` | remove its handler from the provider, then tear down the CoreMIDI objects |
+| `NumarkNS7Device::Stop` | `SetMidiClient(nullptr)` first, stop draining |
+| `NS7MIDIDriver::Stop` | `provider->SetMidiClient(nullptr)`, stop delivering, remove the CoreMIDI device |
 
 The stats line gains MIDI-out counters: packets sent, bytes, errors, drops.
 
