@@ -848,6 +848,207 @@ inline bool CrossesZeroTimestamp(uint64_t before, uint64_t after, uint64_t perio
     return true;
 }
 
+
+// ── Streaming request slots (EP 0x02, 0x81, 0x86, 0x83) ──────────────────────
+//
+// Frame for the one immediate retry after the controller rejected an iso
+// request's start frame (IsoTooNew/IsoTooOld): now + lead, or the end of the
+// pipe's furthest still-queued request if that is later and plausible, so
+// the chain stays monotonic. A queue end implausibly far ahead of the bus
+// is stale (the frame counter moved) and is ignored.
+inline uint64_t IsoRetryFrame(uint64_t now, uint64_t lead, uint64_t queuedEnd)
+{
+    const uint64_t base = now + lead;
+    return queuedEnd > base && !IsoFrameTooFarAhead(queuedEnd, now) ? queuedEnd : base;
+}
+
+// Policy for the request slots the driver keeps queued on its four streaming
+// pipes. The driver does the I/O; this says what to (re)submit, when a STALL
+// must be cleared first, when a failed slot may be retried, which iso pipe
+// the watchdog should abort, and gates everything on system sleep. It exists
+// because on hardware, after a Mac sleep/wake, every iso resubmit failed; a
+// failed submission never completes, so the slots were lost and the chains
+// died for good.
+//
+// Slot states:  Idle -> (Collect) -> Pending -> (OnSubmitted) -> Armed | Failed
+//               Armed -> (OnCompletion) -> Pending (resubmit now) | Failed | Idle (asleep)
+//               Failed -> (Collect on a tick at or after its due tick) -> Pending
+// Rules:
+//   - Every submission goes through Pending, and only Idle or due Failed
+//     slots are collected, so a slot is never submitted twice.
+//   - A failed submission (or a completion that should not be resubmitted in
+//     place: iso "going away" statuses, bulk non-STALL errors) makes the slot
+//     Failed. Failed slots are retried only from watchdog ticks, after 1, 2,
+//     4, 8, then 16 ticks (100 ms .. 1.6 s at the driver's 100 ms tick). An
+//     accepted submission or an OK completion resets the backoff.
+//   - A bulk STALL (on completion, or from the submission) clears the STALL
+//     before the next submission of that slot.
+//   - Per iso pipe, a tick with no completion and no accepted re-arm counts
+//     as stuck; after kStuckTicks such ticks in a row, with at least one
+//     request armed, EndTick asks for that pipe (only) to be aborted, so
+//     requests parked at frames the bus won't reach come back and get retried.
+//   - OnPowerOff: nothing is collected or aborted and completions leave
+//     slots Idle until OnPowerOn, which also clears every backoff so the
+//     next Collect re-arms every slot that came back exactly once.
+class StreamKeeper {
+public:
+    enum Group : uint8_t { kPlayback, kFeedback, kCapture, kMidiIn, kGroupCount };
+    static constexpr uint32_t kMaxSlots        = 16;
+    static constexpr uint32_t kStuckTicks      = 10;   // ~1 s at 100 ms ticks
+    static constexpr uint32_t kMaxBackoffTicks = 16;   // ~1.6 s
+
+    enum class Submit : uint8_t { Ok, Stalled, Error };      // result of a submission
+    enum class Next : uint8_t {
+        Idle,                    // leave the slot; a tick or wake re-arms it
+        Submit,                  // submit it again now; report with OnSubmitted
+        ClearStallThenSubmit,    // clear the STALL, then submit; a failed clear is Submit::Stalled
+    };
+    struct Work { uint8_t group; uint8_t slot; bool clearStall; };
+
+    static constexpr uint32_t kStatusUnderrun = 0xe00002e7;   // kIOReturnUnderrun: data ok
+    static constexpr uint32_t kStatusStalled  = 0xe0005000;   // kUSBHostReturnPipeStalled
+
+    void Init(uint32_t playback, uint32_t feedback, uint32_t capture, uint32_t midiIn)
+    {
+        *this = StreamKeeper();
+        const uint32_t n[kGroupCount] = { playback, feedback, capture, midiIn };
+        for (uint32_t g = 0; g < kGroupCount; g++) mCount[g] = n[g] < kMaxSlots ? n[g] : kMaxSlots;
+    }
+
+    // Hands out the slots to submit now (Idle, and Failed ones that are due)
+    // in start order: feedback, playback, capture, MIDI in. Each becomes
+    // Pending; report each with OnSubmitted. Nothing while asleep.
+    uint32_t Collect(Work * out, uint32_t cap)
+    {
+        if (mSleeping) return 0;
+        static constexpr Group kOrder[kGroupCount] = { kFeedback, kPlayback, kCapture, kMidiIn };
+        uint32_t n = 0;
+        for (Group g : kOrder) {
+            for (uint32_t i = 0; i < mCount[g] && n < cap; i++) {
+                Slot & s = mSlots[g][i];
+                if (s.state == State::Idle || (s.state == State::Failed && mTick >= s.dueTick)) {
+                    s.state = State::Pending;
+                    out[n++] = { uint8_t(g), uint8_t(i), s.needClear };
+                }
+            }
+        }
+        return n;
+    }
+
+    // Result of submitting a Pending slot (after clearing its STALL if asked).
+    void OnSubmitted(Group g, uint32_t i, Submit r)
+    {
+        if (!Valid(g, i) || mSlots[g][i].state != State::Pending) return;
+        Slot & s = mSlots[g][i];
+        if (r == Submit::Ok) {
+            s.state = State::Armed;
+            s.fails = 0;
+            s.needClear = false;
+            mSubmittedOk[g]++;
+            return;
+        }
+        if (r == Submit::Stalled) s.needClear = true;
+        Fail(s);
+    }
+
+    // A request completed with `status`. Returns what to do with its slot.
+    Next OnCompletion(Group g, uint32_t i, uint32_t status)
+    {
+        if (!Valid(g, i) || mSlots[g][i].state != State::Armed) return Next::Idle;
+        Slot & s = mSlots[g][i];
+        const bool ok = status == 0 || status == kStatusUnderrun;
+        const bool stalled = status == kStatusStalled;
+        if (ok) s.fails = 0;
+        if (stalled) s.needClear = true;
+        if (mSleeping) {
+            s.state = State::Idle;
+            return Next::Idle;
+        }
+        mCompletions[g]++;
+        if (g == kPlayback || g == kFeedback) {
+            if (CompletionResubmitsNow(status)) {
+                s.state = State::Pending;
+                return Next::Submit;
+            }
+        } else if (ok || stalled) {
+            s.state = State::Pending;
+            return stalled ? Next::ClearStallThenSubmit : Next::Submit;
+        }
+        Fail(s);
+        return Next::Idle;
+    }
+
+    // Watchdog tick: BeginTick, Collect + submit, then EndTick, which returns
+    // the iso pipes to abort as a mask of (1 << kPlayback) / (1 << kFeedback).
+    void BeginTick() { mTick++; }
+    uint32_t EndTick()
+    {
+        uint32_t abort = 0;
+        for (uint32_t gi = kPlayback; gi <= kFeedback; gi++) {   // the iso pipes
+            const Group g = Group(gi);
+            if (mSleeping || mCompletions[g] || mSubmittedOk[g] || Armed(g) == 0) {
+                mStuck[g] = 0;
+            } else if (++mStuck[g] >= kStuckTicks) {
+                abort |= 1u << g;
+                mStuck[g] = 0;
+            }
+        }
+        for (uint32_t g = 0; g < kGroupCount; g++) mCompletions[g] = mSubmittedOk[g] = 0;
+        return abort;
+    }
+
+    void OnPowerOff() { mSleeping = true; }
+    void OnPowerOn()
+    {
+        mSleeping = false;
+        for (uint32_t g = 0; g < kGroupCount; g++) {
+            mCompletions[g] = mSubmittedOk[g] = mStuck[g] = 0;
+            for (uint32_t i = 0; i < mCount[g]; i++) {
+                Slot & s = mSlots[g][i];
+                s.fails = 0;
+                if (s.state == State::Failed) s.state = State::Idle;
+            }
+        }
+    }
+
+    bool Sleeping() const { return mSleeping; }
+    bool IsArmed(Group g, uint32_t i) const { return Valid(g, i) && mSlots[g][i].state == State::Armed; }
+    uint32_t Armed(Group g) const
+    {
+        uint32_t n = 0;
+        for (uint32_t i = 0; i < mCount[g]; i++) n += mSlots[g][i].state == State::Armed;
+        return n;
+    }
+    uint32_t Failures(Group g, uint32_t i) const { return Valid(g, i) ? mSlots[g][i].fails : 0; }
+
+private:
+    enum class State : uint8_t { Idle, Pending, Armed, Failed };
+    struct Slot {
+        State    state     = State::Idle;
+        uint8_t  fails     = 0;       // consecutive failures, for the backoff
+        bool     needClear = false;   // clear a STALL before the next submission
+        uint64_t dueTick   = 0;       // Failed: first tick it may be retried on
+    };
+
+    bool Valid(Group g, uint32_t i) const { return g < kGroupCount && i < mCount[g]; }
+
+    void Fail(Slot & s)
+    {
+        if (s.fails < 8) s.fails++;
+        const uint32_t delay = 1u << (s.fails - 1);
+        s.dueTick = mTick + (delay < kMaxBackoffTicks ? delay : kMaxBackoffTicks);
+        s.state = State::Failed;
+    }
+
+    Slot     mSlots[kGroupCount][kMaxSlots];
+    uint32_t mCount[kGroupCount] = {};
+    uint32_t mCompletions[kGroupCount] = {};   // since the last EndTick
+    uint32_t mSubmittedOk[kGroupCount] = {};   // since the last EndTick
+    uint32_t mStuck[kGroupCount] = {};         // iso: stuck ticks in a row
+    uint64_t mTick = 0;
+    bool     mSleeping = false;
+};
+
 } // namespace NS7
 
 #endif // NS7Protocol_h

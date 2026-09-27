@@ -362,8 +362,10 @@ practices baked into this repo's workflow (see `docs/superpowers/`):
 - `Tests/` — host unit tests for `NS7Protocol.h`: `DeviceProtocolTests.cpp`
   (descriptors, audio, control), `MidiTests.cpp` (MIDI framing and
   conversion, FIFO), `PropertyTests.cpp` (seeded randomized properties),
-  `FifoConcurrencyTests.cpp` (two-thread FIFO), and
-  `MidiOutStateMachineTests.cpp`, sharing `TestHarness.h`.
+  `FifoConcurrencyTests.cpp` (two-thread FIFO),
+  `MidiOutStateMachineTests.cpp`, and `StreamKeeperTests.cpp` (streaming
+  request slots: re-arm, backoff, stuck-pipe watchdog, sleep/wake), sharing
+  `TestHarness.h`.
 - `docs/USB_ANALYSIS.md` — the original (now superseded) USB Audio Class
   analysis.
 - `docs/superpowers/specs/2026-09-26-coremidi-service-design.md` — the
