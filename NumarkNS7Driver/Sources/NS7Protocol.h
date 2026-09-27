@@ -1,0 +1,421 @@
+// NS7Protocol.h
+// Hardware-independent pieces of the Numark NS7 USB protocol (Ploytec
+// "BulkIn/IsocOut" device). Header-only and free of DriverKit types so the
+// host unit tests in Tests/ can exercise it. See docs/PROTOCOL.md.
+
+#ifndef NS7Protocol_h
+#define NS7Protocol_h
+
+#include <stddef.h>
+#include <stdint.h>
+#include <string.h>
+
+namespace NS7 {
+
+// ── Constants ────────────────────────────────────────────────────────────────
+
+constexpr uint8_t  kEPPlaybackOut = 0x02;   // IF0 alt1, isochronous OUT
+constexpr uint8_t  kEPMidiIn      = 0x83;   // IF0 alt1, bulk IN
+constexpr uint8_t  kEPMidiOut     = 0x04;   // IF0 alt1, bulk OUT
+constexpr uint8_t  kEPFeedbackIn  = 0x81;   // IF1 alt1, isochronous IN
+constexpr uint8_t  kEPCaptureIn   = 0x86;   // IF1 alt1, bulk IN
+
+constexpr uint32_t kChannels            = 4;
+constexpr uint32_t kBytesPerSample      = 3;
+constexpr uint32_t kPlaybackFrameBytes  = kChannels * kBytesPerSample;   // 12
+constexpr uint32_t kCaptureFrameBytes   = 64;
+constexpr uint32_t kCaptureFramesPerPacket = 8;                          // 512-byte packet
+
+constexpr uint32_t kMidiPacketBytes  = 42;
+constexpr uint32_t kMidiInDataBytes  = 41;
+constexpr uint32_t kMidiOutMaxBytes  = 39;
+constexpr uint8_t  kMidiFill         = 0xFD;
+constexpr uint8_t  kMidiCPort        = 0xE0;
+
+// ── Control requests ─────────────────────────────────────────────────────────
+// Vendor requests are device-recipient. Register 0x49 reads return 1 byte;
+// writes carry the value in wValue with no data stage. Rate requests are
+// UAC1-style endpoint requests with a 3-byte little-endian value.
+
+constexpr uint8_t  kReqFirmwareInfo  = 0x56;   // vendor IN, 8 then 5 bytes
+constexpr uint8_t  kReqRegister      = 0x49;   // vendor IN (read) / OUT (write), wIndex = reg
+constexpr uint8_t  kReqDeepSleep     = 0x44;   // vendor OUT, before system sleep
+constexpr uint8_t  kUacSetCur        = 0x01;
+constexpr uint8_t  kUacGetCur        = 0x81;
+constexpr uint16_t kUacSamplingFreq  = 0x0100;   // SAMPLING_FREQ_CONTROL << 8
+constexpr uint32_t kSampleRate       = 44100;    // the only rate the NS7 supports
+constexpr uint32_t kSettleMs         = 200;      // plist kMsWait, after SET_INTERFACE
+
+constexpr uint8_t  kReg0InternalClock = 0x02;
+constexpr uint8_t  kReg0Busy          = 0x04;   // re-read after 20 ms if set
+constexpr uint8_t  kReg0Stream        = 0x10;
+constexpr uint8_t  kReg0InputsLE16    = 0x20;
+
+inline uint8_t Reg0WithInternalClock(uint8_t v) { return uint8_t(v | kReg0InternalClock); }
+
+// Written after the rate is set, just before streaming starts.
+inline uint8_t Reg0WithStreamEnable(uint8_t v, uint32_t inputChannels)
+{
+    v = inputChannels <= 16 ? uint8_t(v | kReg0InputsLE16) : uint8_t(v & ~kReg0InputsLE16);
+    return uint8_t(v | kReg0Stream);
+}
+
+inline void EncodeSampleRate(uint32_t hz, uint8_t out[3])
+{
+    out[0] = uint8_t(hz); out[1] = uint8_t(hz >> 8); out[2] = uint8_t(hz >> 16);
+}
+
+inline uint32_t DecodeSampleRate(const uint8_t in[3])
+{
+    return uint32_t(in[0]) | uint32_t(in[1]) << 8 | uint32_t(in[2]) << 16;
+}
+
+// ── Descriptor layout ────────────────────────────────────────────────────────
+
+struct Endpoint {
+    uint16_t maxPacketSize;
+    uint8_t  interval;
+    bool     found;
+};
+
+struct Layout {
+    Endpoint playbackOut;   // 0x02
+    Endpoint midiIn;        // 0x83
+    Endpoint midiOut;       // 0x04
+    Endpoint feedbackIn;    // 0x81
+    Endpoint captureIn;     // 0x86
+};
+
+// Walks a configuration descriptor and checks that every endpoint the driver
+// uses is present on the expected interface/alternate with the expected
+// transfer type. Returns false for anything else, including malformed input.
+inline bool ParseLayout(const uint8_t * d, size_t len, Layout * out)
+{
+    memset(out, 0, sizeof *out);
+    if (len < 9 || d[0] < 9 || d[1] != 0x02) return false;
+    const size_t total = size_t(d[2]) | (size_t(d[3]) << 8);
+    if (total > len) return false;
+
+    struct Want { uint8_t addr, iface, xferType; Endpoint * ep; };
+    const Want wants[] = {
+        { kEPPlaybackOut, 0, 1, &out->playbackOut },
+        { kEPMidiIn,      0, 2, &out->midiIn },
+        { kEPMidiOut,     0, 2, &out->midiOut },
+        { kEPFeedbackIn,  1, 1, &out->feedbackIn },
+        { kEPCaptureIn,   1, 2, &out->captureIn },
+    };
+
+    int iface = -1, alt = -1;
+    for (size_t off = 0; off < total; ) {
+        const uint8_t bLength = d[off];
+        if (bLength < 2 || off + bLength > total) return false;
+        const uint8_t * p = d + off;
+        if (p[1] == 0x04 && bLength >= 9) {
+            iface = p[2]; alt = p[3];
+        } else if (p[1] == 0x05 && bLength >= 7) {
+            for (const Want & w : wants) {
+                if (p[2] != w.addr) continue;
+                if (iface != w.iface || alt != 1 || (p[3] & 0x03) != w.xferType) return false;
+                w.ep->maxPacketSize = uint16_t((p[4] | (p[5] << 8)) & 0x07FF);
+                w.ep->interval      = p[6];
+                w.ep->found         = true;
+            }
+        }
+        off += bLength;
+    }
+    for (const Want & w : wants)
+        if (!w.ep->found) return false;
+    return true;
+}
+
+// ── Playback packetisation (EP 0x02) ─────────────────────────────────────────
+
+// Frames to send in one 125 µs microframe. `feedbackFrames` is the latest
+// value from EP 0x81 (frames the device wants this millisecond); `slot` is
+// a running microframe counter. Values outside 42..46 fall back to the
+// nominal 44.1 kHz pattern, which averages 441 frames per 80 microframes.
+inline uint32_t PlaybackFramesForMicroframe(int feedbackFrames, uint32_t slot)
+{
+    static const uint8_t kSub[5][8] = {
+        { 6,5,5,5,6,5,5,5 },   // 42
+        { 5,5,6,5,6,5,6,5 },   // 43
+        { 6,5,6,5,6,5,6,5 },   // 44
+        { 6,6,5,6,5,6,5,6 },   // 45
+        { 5,6,6,6,5,6,6,6 },   // 46
+    };
+    if (feedbackFrames >= 42 && feedbackFrames <= 46)
+        return kSub[feedbackFrames - 42][slot & 7];
+    return 5 + (slot & 1) + ((slot % 80) == 0 ? 1 : 0);
+}
+
+// Byte count of each OUT packet for `count` consecutive microframes, starting
+// at `*slot` (which is advanced). Returns the total, i.e. the data length.
+inline uint32_t FillPlaybackPacketSizes(int feedbackFrames, uint32_t * slot, uint32_t count,
+                                        uint32_t * sizes)
+{
+    uint32_t total = 0;
+    for (uint32_t k = 0; k < count; k++) {
+        sizes[k] = PlaybackFramesForMicroframe(feedbackFrames, (*slot)++) * kPlaybackFrameBytes;
+        total += sizes[k];
+    }
+    return total;
+}
+
+// ── Isochronous scheduling ───────────────────────────────────────────────────
+
+// Frame an iso request should start on. `planned` continues the previous
+// request; once it is no longer in the future (the host fell behind and the
+// controller would reject it as too old), restart `lead` frames after `now`.
+inline uint64_t NextIsoFrame(uint64_t planned, uint64_t now, uint64_t lead)
+{
+    return planned > now ? planned : now + lead;
+}
+
+// ── Rate feedback (EP 0x81) ──────────────────────────────────────────────────
+
+// Returns the frame count for the millisecond, or -1 if the packet is not
+// the 3 bytes the device is expected to send.
+inline int ParseFeedback(const uint8_t * p, uint32_t len)
+{
+    return len == 3 ? int(p[0]) : -1;
+}
+
+// ── Capture decoding (EP 0x86) ───────────────────────────────────────────────
+
+// Each 64-byte wire frame is two 32-byte halves. In each half, bytes 0..23
+// are bit-planes MSB first: bit b of byte k is bit (23-k) of wire channel
+// (2b + half). The NS7 uses wire channels 0..3; bytes 24..31 are padding.
+// Output is packed 24-bit little-endian, 4 channels (12 bytes per frame).
+inline void DecodeCaptureFrames(const uint8_t * src, uint32_t frames, uint8_t * dst)
+{
+    for (uint32_t f = 0; f < frames; f++, src += kCaptureFrameBytes, dst += kPlaybackFrameBytes) {
+        uint32_t ch[4] = { 0, 0, 0, 0 };
+        for (int half = 0; half < 2; half++) {
+            const uint8_t * h = src + 32 * half;
+            for (int k = 0; k < 24; k++) {
+                ch[half]     = (ch[half]     << 1) | ( h[k]       & 1u);
+                ch[half + 2] = (ch[half + 2] << 1) | ((h[k] >> 1) & 1u);
+            }
+        }
+        for (int c = 0; c < 4; c++) {
+            dst[3 * c + 0] = uint8_t(ch[c]);
+            dst[3 * c + 1] = uint8_t(ch[c] >> 8);
+            dst[3 * c + 2] = uint8_t(ch[c] >> 16);
+        }
+    }
+}
+
+// ── MIDI transport framing (EP 0x83 in / EP 0x04 out) ────────────────────────
+
+// Copies the raw MIDI bytes out of an IN transfer. Only the first 41 bytes
+// carry data; 0xFD is filler. `out` must hold 41 bytes. Returns the count.
+inline uint32_t ExtractMidiIn(const uint8_t * pkt, uint32_t len, uint8_t * out)
+{
+    const uint32_t n = len < kMidiInDataBytes ? len : kMidiInDataBytes;
+    uint32_t k = 0;
+    for (uint32_t i = 0; i < n; i++)
+        if (pkt[i] != kMidiFill) out[k++] = pkt[i];
+    return k;
+}
+
+// Builds one 42-byte OUT transfer from up to 39 raw MIDI bytes, padded with
+// 0xFD, with the C-port byte last. Returns how many bytes of `data` it
+// consumed; 0 means there is nothing to send.
+inline uint32_t BuildMidiOutPacket(const uint8_t * data, uint32_t avail, uint8_t pkt[kMidiPacketBytes])
+{
+    if (avail == 0) return 0;
+    const uint32_t n = avail < kMidiOutMaxBytes ? avail : kMidiOutMaxBytes;
+    memset(pkt, kMidiFill, kMidiPacketBytes);
+    memcpy(pkt, data, n);
+    pkt[kMidiPacketBytes - 1] = kMidiCPort;
+    return n;
+}
+
+// ── Raw MIDI 1.0 byte stream → UMP (group 0) ─────────────────────────────────
+
+typedef void (*UmpCallback)(void * ctx, const uint32_t * words, size_t count);
+
+class RawMidiToUmp {
+public:
+    void Push(const uint8_t * bytes, size_t n, UmpCallback cb, void * ctx)
+    {
+        for (size_t i = 0; i < n; i++) PushByte(bytes[i], cb, ctx);
+    }
+
+private:
+    uint8_t  mStatus   = 0;      // running status, or current system common
+    uint8_t  mData[2]  = {};
+    uint8_t  mHave     = 0;
+    uint8_t  mNeed     = 0;
+    bool     mInSysEx  = false;
+    bool     mSysExStarted = false;
+    uint8_t  mSysEx[6] = {};
+    uint8_t  mSysExLen = 0;
+
+    static uint8_t DataBytesFor(uint8_t status)
+    {
+        switch (status & 0xF0) {
+            case 0xC0: case 0xD0: return 1;
+            case 0xF0: break;
+            default:              return 2;
+        }
+        switch (status) {
+            case 0xF1: case 0xF3: return 1;
+            case 0xF2:            return 2;
+            default:              return 0;
+        }
+    }
+
+    void EmitSysEx(uint8_t kind, UmpCallback cb, void * ctx)
+    {
+        uint8_t b[6] = {};
+        memcpy(b, mSysEx, mSysExLen);
+        const uint32_t w[2] = {
+            0x30000000u | (uint32_t(kind) << 20) | (uint32_t(mSysExLen) << 16)
+                        | (uint32_t(b[0]) << 8) | b[1],
+            (uint32_t(b[2]) << 24) | (uint32_t(b[3]) << 16) | (uint32_t(b[4]) << 8) | b[5],
+        };
+        cb(ctx, w, 2);
+        mSysExLen = 0;
+    }
+
+    void EndSysEx(UmpCallback cb, void * ctx)
+    {
+        EmitSysEx(mSysExStarted ? 3 : 0, cb, ctx);   // end, or complete-in-one
+        mInSysEx = false;
+        mSysExStarted = false;
+    }
+
+    void PushByte(uint8_t b, UmpCallback cb, void * ctx)
+    {
+        if (b >= 0xF8) {                                 // real-time
+            if (b == 0xF9 || b == 0xFD) return;
+            const uint32_t w = 0x10000000u | (uint32_t(b) << 16);
+            cb(ctx, &w, 1);
+            return;
+        }
+        if (mInSysEx) {
+            if (b < 0x80) {
+                if (mSysExLen == 6) {
+                    EmitSysEx(mSysExStarted ? 2 : 1, cb, ctx);
+                    mSysExStarted = true;
+                }
+                mSysEx[mSysExLen++] = b;
+                return;
+            }
+            EndSysEx(cb, ctx);
+            if (b == 0xF7) return;
+        }
+        if (b >= 0x80) {
+            mHave = 0;
+            if (b == 0xF0) { mInSysEx = true; mSysExLen = 0; mStatus = 0; return; }
+            if (b == 0xF4 || b == 0xF5 || b == 0xF7) { mStatus = 0; return; }
+            mStatus = b;
+            mNeed   = DataBytesFor(b);
+            if (mNeed == 0) { EmitMessage(cb, ctx); mStatus = 0; }
+            return;
+        }
+        if (mStatus == 0) return;                        // no status to apply
+        mData[mHave++] = b;
+        if (mHave < mNeed) return;
+        EmitMessage(cb, ctx);
+        mHave = 0;
+        if (mStatus >= 0xF0) mStatus = 0;                // system common: no running status
+    }
+
+    void EmitMessage(UmpCallback cb, void * ctx)
+    {
+        const uint32_t type = mStatus >= 0xF0 ? 0x1 : 0x2;
+        const uint32_t w = (type << 28) | (uint32_t(mStatus) << 16)
+                         | (mNeed > 0 ? uint32_t(mData[0]) << 8 : 0)
+                         | (mNeed > 1 ? uint32_t(mData[1]) : 0);
+        cb(ctx, &w, 1);
+    }
+};
+
+// ── UMP → raw MIDI 1.0 byte stream ───────────────────────────────────────────
+
+typedef void (*BytesCallback)(void * ctx, const uint8_t * bytes, size_t count);
+
+// Converts system (type 1), MIDI 1.0 channel voice (type 2) and 7-bit SysEx
+// (type 3) UMPs to raw bytes. Other message types are skipped by length.
+inline void UmpToRawMidi(const uint32_t * w, size_t count, BytesCallback cb, void * ctx)
+{
+    static const uint8_t kWords[16] = { 1,1,1,2,2,4,1,1,2,2,2,3,3,4,4,4 };
+    for (size_t i = 0; i < count; ) {
+        const uint32_t w0   = w[i];
+        const uint32_t type = w0 >> 28;
+        const size_t   len  = kWords[type];
+        if (i + len > count) return;
+        const uint8_t status = uint8_t(w0 >> 16), d0 = uint8_t(w0 >> 8), d1 = uint8_t(w0);
+        uint8_t out[8];
+        size_t  n = 0;
+        if (type == 0x1 || type == 0x2) {
+            out[n++] = status;
+            uint8_t data;
+            if (type == 0x2) data = ((status & 0xE0) == 0xC0) ? 1 : 2;
+            else             data = (status == 0xF2) ? 2 : (status == 0xF1 || status == 0xF3) ? 1 : 0;
+            if (data > 0) out[n++] = d0;
+            if (data > 1) out[n++] = d1;
+        } else if (type == 0x3) {
+            const uint8_t kind = (w0 >> 20) & 0xF;
+            uint8_t nb = (w0 >> 16) & 0xF;
+            if (nb > 6) nb = 6;
+            const uint32_t w1 = w[i + 1];
+            const uint8_t b[6] = { d0, d1, uint8_t(w1 >> 24), uint8_t(w1 >> 16),
+                                   uint8_t(w1 >> 8), uint8_t(w1) };
+            if (kind == 0 || kind == 1) out[n++] = 0xF0;
+            for (uint8_t k = 0; k < nb; k++) out[n++] = b[k] & 0x7F;
+            if (kind == 0 || kind == 3) out[n++] = 0xF7;
+        }
+        if (n) cb(ctx, out, n);
+        i += len;
+    }
+}
+
+// ── Ring buffer copies ───────────────────────────────────────────────────────
+
+inline void RingWrite(uint8_t * ring, uint32_t ringFrames, uint32_t frameBytes,
+                      uint64_t sampleTime, const uint8_t * src, uint32_t frames)
+{
+    uint32_t pos = uint32_t(sampleTime % ringFrames);
+    while (frames) {
+        const uint32_t chunk = (ringFrames - pos) < frames ? (ringFrames - pos) : frames;
+        memcpy(ring + size_t(pos) * frameBytes, src, size_t(chunk) * frameBytes);
+        src += size_t(chunk) * frameBytes;
+        frames -= chunk;
+        pos = 0;
+    }
+}
+
+inline void RingReadAndClear(uint8_t * ring, uint32_t ringFrames, uint32_t frameBytes,
+                             uint64_t sampleTime, uint8_t * dst, uint32_t frames)
+{
+    uint32_t pos = uint32_t(sampleTime % ringFrames);
+    while (frames) {
+        const uint32_t chunk = (ringFrames - pos) < frames ? (ringFrames - pos) : frames;
+        uint8_t * p = ring + size_t(pos) * frameBytes;
+        memcpy(dst, p, size_t(chunk) * frameBytes);
+        memset(p, 0, size_t(chunk) * frameBytes);
+        dst += size_t(chunk) * frameBytes;
+        frames -= chunk;
+        pos = 0;
+    }
+}
+
+// ── Zero-timestamp boundary detection ────────────────────────────────────────
+
+// True if the sample count moved from `before` to `after` across a multiple
+// of `period` (the ZTS period, normally the ring size). Reports that multiple.
+inline bool CrossesZeroTimestamp(uint64_t before, uint64_t after, uint64_t period,
+                                 uint64_t * boundary)
+{
+    const uint64_t next = (before / period + 1) * period;
+    if (after < next) return false;
+    *boundary = next;
+    return true;
+}
+
+} // namespace NS7
+
+#endif // NS7Protocol_h

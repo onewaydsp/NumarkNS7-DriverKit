@@ -10,7 +10,7 @@
 | **idVendor** | `0x15E4` (5604 decimal) | Ploytec GmbH — OEM manufacturer for Numark |
 | **idProduct** | `0x0071` (113 decimal) | Numark NS7 |
 | Original bundle ID | `com.numark.ns7.usb` | |
-| DriverKit bundle ID | `com.numark.ns7.driverkit` | |
+| DriverKit bundle ID | `com.andrewabner.ns7.driverkit` | |
 
 ---
 

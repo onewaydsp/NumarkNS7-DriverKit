@@ -1,0 +1,58 @@
+// NumarkNS7Device.iig
+// USB root service for the Numark NS7 (VID 0x15E4, PID 0x0071).
+//
+// The NS7 is NOT a USB Audio/MIDI class device. It exposes two vendor-specific
+// (class 0xFF) interfaces using Ploytec's proprietary protocol; alternate
+// setting 1 of each carries the endpoints (read from the hardware):
+//
+//   IF0 alt1:  EP 0x02 iso  OUT  156 B / microframe   playback
+//              EP 0x83 bulk IN   512 B                MIDI in
+//              EP 0x04 bulk OUT  512 B                MIDI out
+//   IF1 alt1:  EP 0x81 iso  IN    64 B / 1 ms         rate feedback
+//              EP 0x86 bulk IN   512 B                capture
+//
+// This service claims the device, selects those alternate settings, runs the
+// Ploytec startup handshake and keeps the audio pipes streaming. The device
+// only sends MIDI while the audio pipes run (verified on hardware), so they
+// stream silence even with no audio client. MIDI input is parsed to UMP.
+// Endpoint roles and wire formats are documented in docs/PROTOCOL.md.
+
+#ifndef NumarkNS7Device_h
+#define NumarkNS7Device_h
+
+#include <Availability.h>
+#include <DriverKit/IOService.iig>
+#include <USBDriverKit/IOUSBHostPipe.iig>
+
+class IOUSBHostDevice;
+class IOUSBHostInterface;
+
+class NumarkNS7Device : public IOService
+{
+public:
+    virtual bool init() override;
+    virtual void free() override;
+
+    virtual kern_return_t Start(IOService * provider) override;
+    virtual kern_return_t Stop(IOService * provider) override;
+
+    // Accessors for the audio and MIDI services, which run in this process.
+    IOUSBHostDevice * GetUSBDevice() LOCALONLY;
+    IOUSBHostPipe *   GetPipe(uint8_t endpointAddress) LOCALONLY;
+
+protected:
+    // Streaming completions. Each in-flight request has its own OSAction whose
+    // reference holds the request's slot index.
+    virtual void PlaybackComplete(OSAction * action, IOReturn status)
+        TYPE(IOUSBHostPipe::CompleteAsyncIsochIO);
+    virtual void FeedbackComplete(OSAction * action, IOReturn status)
+        TYPE(IOUSBHostPipe::CompleteAsyncIsochIO);
+    virtual void CaptureComplete(OSAction * action, IOReturn status,
+                                 uint32_t actualByteCount, uint64_t completionTimestamp)
+        TYPE(IOUSBHostPipe::CompleteAsyncIO);
+    virtual void MidiInComplete(OSAction * action, IOReturn status,
+                                uint32_t actualByteCount, uint64_t completionTimestamp)
+        TYPE(IOUSBHostPipe::CompleteAsyncIO);
+};
+
+#endif /* NumarkNS7Device_h */

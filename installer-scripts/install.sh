@@ -18,7 +18,7 @@
 set -euo pipefail
 
 DRIVER_NAME="NumarkNS7Driver"
-DEXT_BUNDLE_ID="com.numark.ns7.driverkit"
+DEXT_BUNDLE_ID="com.andrewabner.ns7.driverkit"
 BUILD_DIR="${BUILD_DIR:-$(xcodebuild -project NumarkNS7Driver.xcodeproj -target NumarkNS7Driver -showBuildSettings 2>/dev/null | grep 'BUILT_PRODUCTS_DIR' | head -1 | awk '{print $3}')}"
 DEXT_PATH="${BUILD_DIR}/${DRIVER_NAME}.dext"
 

@@ -3,7 +3,7 @@
 
 set -euo pipefail
 
-DEXT_BUNDLE_ID="com.numark.ns7.driverkit"
+DEXT_BUNDLE_ID="com.andrewabner.ns7.driverkit"
 
 echo "═══════════════════════════════════════════════════════════"
 echo "  Numark NS7 DriverKit Extension — Uninstaller"
@@ -20,7 +20,7 @@ fi
 # Remove files
 for PATH_TO_REMOVE in \
     "/Library/SystemExtensions/${DEXT_BUNDLE_ID}" \
-    "/Library/SystemExtensions/NumarkNS7Driver.dext"
+    "/Library/SystemExtensions/com.andrewabner.ns7.driverkit.dext"
 do
     if [ -e "$PATH_TO_REMOVE" ]; then
         echo "Removing: $PATH_TO_REMOVE"
