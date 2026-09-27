@@ -1,0 +1,2196 @@
+{
+  "schema": "ns7-controls/1",
+  "device": "Numark NS7 (original)",
+  "generated": "2026-09-27",
+  "notes": [
+    "Scope: the ORIGINAL Numark NS7 (2009). Per the reference manual v1.1 pp.5-8 it has no built-in FX section (FX came with the separate NS7FX add-on), so there are no fxA/fxB sections.",
+    "Absent on the original NS7 per the manual: SHIFT, deck select / layer, slip mode, 33/45/78 speed selectors, EQ kill buttons (each EQ knob kills at full left), per-channel cue/PFL buttons, a platter direction switch (BLEEP/REVERSE is the nearest).",
+    "Headphone cueing is the HEADPHONE MIX fader plus a HEADPHONE MODE switch; the only motor on/off control is SCRATCH OFF.",
+    "Mixxx 2010 mapping conflicts: Deck A reloop_exit and Deck B cue_default both use 90 31; Deck B loop_out 90 50 breaks the +0x21 deck offset; the script's pitch ranges (8/10/30/100%) differ from the manual (8/16/50%).",
+    "Everything with \"verified\": false is a prior. Run Tools/ns7midi learn / ledscan / verify to confirm (see Tools/ns7midi/README.md)."
+  ],
+  "sources": [
+    {
+      "id": "manual-ref-v1.1",
+      "title": "Numark NS7 Reference Manual v1.1 (page numbers are printed page numbers; PDF page = printed + 3)",
+      "url": "https://www.numark.com/images/product_downloads/ns7_reference_manual___v1.1.pdf",
+      "fetched": true
+    },
+    {
+      "id": "quickstart",
+      "title": "Numark NS7 / Serato ITCH Quickstart Poster (assembly and connection only; no control legend)",
+      "url": "https://www.numark.com/images/product_downloads/ns7_quickstart_03.pdf",
+      "fetched": true
+    },
+    {
+      "id": "mixxx",
+      "title": "Mixxx 2.5.6 built-in Numark NS7.midi.xml (2010, preliminary)",
+      "path": "/Applications/Mixxx.app/Contents/Resources/controllers/Numark NS7.midi.xml (+ Numark-NS7-scripts.js)"
+    },
+    {
+      "id": "hw-2026-09-27",
+      "title": "Hardware observation with ns7midi, build 407"
+    }
+  ],
+  "sections": [
+    {
+      "id": "deckA",
+      "label": "Deck A (left)"
+    },
+    {
+      "id": "deckB",
+      "label": "Deck B (right)"
+    },
+    {
+      "id": "mixer",
+      "label": "Mixer (top panel center)"
+    },
+    {
+      "id": "browse",
+      "label": "Navigation / browse (top panel center)"
+    },
+    {
+      "id": "front",
+      "label": "Front panel"
+    },
+    {
+      "id": "rear",
+      "label": "Rear panel"
+    }
+  ],
+  "controls": [
+    {
+      "id": "deckA.platterRotation",
+      "section": "deckA",
+      "label": "Platter rotation (Deck A)",
+      "kind": "platter",
+      "instruction": "spin forward then backward",
+      "manual_ref": "Reference manual v1.1 p.7 (PDF p.10) #13",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "B0",
+          "data1": "00",
+          "source": "hw-2026-09-27",
+          "verified": true,
+          "note": "7-bit CC stream while platter turns"
+        },
+        {
+          "status": "E0",
+          "data1": null,
+          "source": "hw-2026-09-27",
+          "verified": true,
+          "note": "pitchbend lsb msb stream while platter turns (14-bit position/speed)"
+        },
+        {
+          "status": "B0",
+          "data1": "00",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key 'NumarkNS7.jog_move'; script treats value as 7-bit wrapping position"
+        }
+      ],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "Motorized 7\" direct-drive platter; with motor on it streams continuously. Manual p.21: turning the aluminium edge without touching the vinyl nudges in Scratch Mode."
+    },
+    {
+      "id": "deckA.platterTouch",
+      "section": "deckA",
+      "label": "Platter touch sensor (Deck A)",
+      "kind": "touch",
+      "instruction": "touch and release",
+      "manual_ref": "Reference manual v1.1 p.21 (PDF p.24) #13",
+      "midi_expected": true,
+      "expected_input": [],
+      "expected_led": [],
+      "uncertain": true,
+      "notes": "Manual p.21 (PDF p.24) 'The NS7's PLATTERS are touch-sensitive' (touching the vinyl top stops playback in Scratch Mode). No Mixxx mapping and no hardware observation yet; message unknown. Touch the black vinyl top without turning it."
+    },
+    {
+      "id": "deckA.play",
+      "section": "deckA",
+      "label": "Play/Pause (Deck A)",
+      "kind": "button+led",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.7 (PDF p.10) #14",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "90",
+          "data1": "11",
+          "source": "hw-2026-09-27",
+          "verified": true,
+          "note": "7F press / 00 release = Play A"
+        },
+        {
+          "status": "90",
+          "data1": "11",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key 'play'"
+        }
+      ],
+      "expected_led": [
+        {
+          "status": "B0",
+          "data1": "09",
+          "on": "7F",
+          "off": "00",
+          "source": "hw-2026-09-27",
+          "verified": true,
+          "note": "Notes 90 11 xx do NOT light the play LED"
+        },
+        {
+          "status": "B0",
+          "data1": "09",
+          "on": "7F",
+          "off": "00",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx output 'play'"
+        }
+      ],
+      "uncertain": false,
+      "notes": "Play rate from pause->play and play->pause is set by START TIME / STOP TIME knobs (in software)."
+    },
+    {
+      "id": "deckA.cue",
+      "section": "deckA",
+      "label": "Cue (Deck A)",
+      "kind": "button+led",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.7 (PDF p.10) #15",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "90",
+          "data1": "10",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key 'cue_default'"
+        }
+      ],
+      "expected_led": [
+        {
+          "status": "B0",
+          "data1": "08",
+          "on": "7F",
+          "off": "00",
+          "source": "hw-2026-09-27",
+          "verified": true
+        },
+        {
+          "status": "B0",
+          "data1": "08",
+          "on": "7F",
+          "off": "00",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx output 'cue_default'"
+        }
+      ],
+      "uncertain": false,
+      "notes": ""
+    },
+    {
+      "id": "deckA.sync",
+      "section": "deckA",
+      "label": "Sync (Deck A)",
+      "kind": "button+led",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.7 (PDF p.10) #16",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "90",
+          "data1": "0F",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key 'beatsync'"
+        }
+      ],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "Manual p.22: SYNC button flashes when engaged, so it has an LED; LED address unknown."
+    },
+    {
+      "id": "deckA.startTime",
+      "section": "deckA",
+      "label": "Start Time knob (Deck A)",
+      "kind": "knob",
+      "instruction": "turn fully left then fully right",
+      "manual_ref": "Reference manual v1.1 p.7 (PDF p.10) #17",
+      "midi_expected": true,
+      "expected_input": [],
+      "expected_led": [],
+      "uncertain": true,
+      "notes": "Manual #17 'START TIME / STOP TIME' is one item number; assumed to be two separate knobs per deck. Not in Mixxx map."
+    },
+    {
+      "id": "deckA.stopTime",
+      "section": "deckA",
+      "label": "Stop Time knob (Deck A)",
+      "kind": "knob",
+      "instruction": "turn fully left then fully right",
+      "manual_ref": "Reference manual v1.1 p.7 (PDF p.10) #17",
+      "midi_expected": true,
+      "expected_input": [],
+      "expected_led": [],
+      "uncertain": true,
+      "notes": "See startTime: assumed separate knob sharing manual #17. Not in Mixxx map."
+    },
+    {
+      "id": "deckA.bleepReverse",
+      "section": "deckA",
+      "label": "Bleep / Reverse switch (Deck A)",
+      "kind": "switch",
+      "instruction": "flip through every position",
+      "manual_ref": "Reference manual v1.1 p.7 (PDF p.10) #18",
+      "midi_expected": true,
+      "expected_input": [],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "3-position lever: REVERSE (latching), center (off), BLEEP (momentary, held). Flip to REVERSE, back to center, hold BLEEP, release. Not in Mixxx map."
+    },
+    {
+      "id": "deckA.deleteCue",
+      "section": "deckA",
+      "label": "Delete Cue (Deck A)",
+      "kind": "button+led",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.7 (PDF p.10) #19",
+      "midi_expected": true,
+      "expected_input": [],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "Lit bright red in Delete Cue Mode. Not in Mixxx map."
+    },
+    {
+      "id": "deckA.hotcue1",
+      "section": "deckA",
+      "label": "Hot Cue 1 (Deck A)",
+      "kind": "button+led",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.7 (PDF p.10) #20",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "90",
+          "data1": "13",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key 'hotcue_1_activate'"
+        }
+      ],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "LED lights white when a cue is set, red in Delete Cue Mode (bi-colour). Also used for calibration prompts (p.27). LED address unknown."
+    },
+    {
+      "id": "deckA.hotcue2",
+      "section": "deckA",
+      "label": "Hot Cue 2 (Deck A)",
+      "kind": "button+led",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.7 (PDF p.10) #20",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "90",
+          "data1": "14",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key 'hotcue_2_activate'"
+        }
+      ],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "LED lights white when a cue is set, red in Delete Cue Mode (bi-colour). Also used for calibration prompts (p.27). LED address unknown."
+    },
+    {
+      "id": "deckA.hotcue3",
+      "section": "deckA",
+      "label": "Hot Cue 3 (Deck A)",
+      "kind": "button+led",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.7 (PDF p.10) #20",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "90",
+          "data1": "15",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key 'hotcue_3_activate'"
+        }
+      ],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "LED lights white when a cue is set, red in Delete Cue Mode (bi-colour). Also used for calibration prompts (p.27). LED address unknown."
+    },
+    {
+      "id": "deckA.hotcue4",
+      "section": "deckA",
+      "label": "Hot Cue 4 (Deck A)",
+      "kind": "button+led",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.7 (PDF p.10) #20",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "90",
+          "data1": "16",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key 'hotcue_4_activate'"
+        }
+      ],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "LED lights white when a cue is set, red in Delete Cue Mode (bi-colour). Also used for calibration prompts (p.27). LED address unknown."
+    },
+    {
+      "id": "deckA.hotcue5",
+      "section": "deckA",
+      "label": "Hot Cue 5 (Deck A)",
+      "kind": "button+led",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.7 (PDF p.10) #20",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "90",
+          "data1": "17",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key 'hotcue_5_activate'"
+        }
+      ],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "LED lights white when a cue is set, red in Delete Cue Mode (bi-colour). Also used for calibration prompts (p.27). LED address unknown."
+    },
+    {
+      "id": "deckA.loopOnOff",
+      "section": "deckA",
+      "label": "Loop On/Off (Deck A)",
+      "kind": "button",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.7 (PDF p.10) #21",
+      "midi_expected": true,
+      "expected_input": [],
+      "expected_led": [],
+      "uncertain": true,
+      "notes": "Not clearly in Mixxx map (Mixxx 'reloop_exit' was assigned to deckX.loopReloop but could be this button). LED presence not stated in manual."
+    },
+    {
+      "id": "deckA.loopIn",
+      "section": "deckA",
+      "label": "Loop In / Autoloop 1 beat (Deck A)",
+      "kind": "button+led",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.7 (PDF p.10) #22",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "90",
+          "data1": "28",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key 'loop_in'"
+        }
+      ],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "Manual Mode: IN; Autoloop Mode (p.8 #26): 1-beat loop, lights white when active (p.23)."
+    },
+    {
+      "id": "deckA.loopOut",
+      "section": "deckA",
+      "label": "Loop Out / Autoloop 2 beats (Deck A)",
+      "kind": "button+led",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.7 (PDF p.10) #23",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "90",
+          "data1": "29",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key 'loop_out'"
+        }
+      ],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "Manual Mode: OUT; Autoloop Mode: 2-beat loop, lights white when active."
+    },
+    {
+      "id": "deckA.loopSelect",
+      "section": "deckA",
+      "label": "Loop Select / Autoloop 4 beats (Deck A)",
+      "kind": "button+led",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.7 (PDF p.10) #24",
+      "midi_expected": true,
+      "expected_input": [],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "Manual Mode: SELECT; Autoloop Mode: 4-beat loop, lights white when active. Not in Mixxx map."
+    },
+    {
+      "id": "deckA.loopReloop",
+      "section": "deckA",
+      "label": "Reloop / Autoloop 8 beats (Deck A)",
+      "kind": "button+led",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.7 (PDF p.10) #25",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "90",
+          "data1": "31",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key 'reloop_exit'; collides with Deck B cue_default (90 31) in the Mixxx map; physical button assignment is a guess"
+        }
+      ],
+      "expected_led": [],
+      "uncertain": true,
+      "notes": "Manual Mode: RELOOP; Autoloop Mode: 8-beat loop. Mixxx reloop_exit mapped here, but it may actually be ON/OFF (#21)."
+    },
+    {
+      "id": "deckA.loopMode",
+      "section": "deckA",
+      "label": "Loop Mode (Manual/Autoloop) (Deck A)",
+      "kind": "button+led",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.8 (PDF p.11) #26",
+      "midi_expected": true,
+      "expected_input": [],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "Lit red in Manual Mode, white in Autoloop Mode (p.23). Not in Mixxx map."
+    },
+    {
+      "id": "deckA.loopHalve",
+      "section": "deckA",
+      "label": "Loop 1/2 X (Deck A)",
+      "kind": "button",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.8 (PDF p.11) #27",
+      "midi_expected": true,
+      "expected_input": [],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "Not in Mixxx map."
+    },
+    {
+      "id": "deckA.loopDouble",
+      "section": "deckA",
+      "label": "Loop 2 X (Deck A)",
+      "kind": "button",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.8 (PDF p.11) #28",
+      "midi_expected": true,
+      "expected_input": [],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "Not in Mixxx map."
+    },
+    {
+      "id": "deckA.loopShiftLeft",
+      "section": "deckA",
+      "label": "Loop Shift Left (Deck A)",
+      "kind": "button",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.8 (PDF p.11) #29",
+      "midi_expected": true,
+      "expected_input": [],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "Not in Mixxx map. Moves loop by its own length (not a SHIFT modifier)."
+    },
+    {
+      "id": "deckA.loopShiftRight",
+      "section": "deckA",
+      "label": "Loop Shift Right (Deck A)",
+      "kind": "button",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.8 (PDF p.11) #30",
+      "midi_expected": true,
+      "expected_input": [],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "Not in Mixxx map."
+    },
+    {
+      "id": "deckA.stripSearch",
+      "section": "deckA",
+      "label": "Strip Search (Deck A)",
+      "kind": "touch",
+      "instruction": "slide finger from left to right",
+      "manual_ref": "Reference manual v1.1 p.8 (PDF p.11) #31",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "B0",
+          "data1": "45",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key 'playposition'"
+        }
+      ],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "Touch strip = whole track length (needle drop). Calibrated at left/right/center (p.28)."
+    },
+    {
+      "id": "deckA.stripLeds",
+      "section": "deckA",
+      "label": "Strip Search position LEDs (Deck A)",
+      "kind": "led",
+      "instruction": "observe only",
+      "manual_ref": "Reference manual v1.1 p.8 (PDF p.11) #31",
+      "midi_expected": true,
+      "expected_input": [],
+      "expected_led": [
+        {
+          "status": "B0",
+          "data1": "3B",
+          "on": null,
+          "off": null,
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx output 'playposition' min 0.9 max 0.99 (end-of-track warning); on/off values not given in map"
+        }
+      ],
+      "uncertain": true,
+      "notes": "Manual does not describe LEDs on the strip; inferred only from Mixxx playposition output. Check whether B0 3B lights anything."
+    },
+    {
+      "id": "deckA.trackForward",
+      "section": "deckA",
+      "label": "Track Forward (Deck A)",
+      "kind": "button",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.8 (PDF p.11) #32",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "90",
+          "data1": "20",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key 'fwd'; Mixxx fwd = fast-forward, not next track"
+        }
+      ],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": ""
+    },
+    {
+      "id": "deckA.trackBack",
+      "section": "deckA",
+      "label": "Track Back (Deck A)",
+      "kind": "button",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.8 (PDF p.11) #33",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "90",
+          "data1": "1F",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key 'back'; Mixxx back = rewind, not previous track"
+        }
+      ],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": ""
+    },
+    {
+      "id": "deckA.tap",
+      "section": "deckA",
+      "label": "Tap (BPM) (Deck A)",
+      "kind": "button",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.8 (PDF p.11) #34",
+      "midi_expected": true,
+      "expected_input": [],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "Not in Mixxx map."
+    },
+    {
+      "id": "deckA.scratchOff",
+      "section": "deckA",
+      "label": "Scratch Off (motor off) (Deck A)",
+      "kind": "button+led",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.8 (PDF p.11) #35",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "90",
+          "data1": "21",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key 'NumarkNS7.scratch'; script toggles scratch mode"
+        }
+      ],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "Disables the platter motor (Nudge Mode) and is lit when active (p.21). This is the NS7's only motor start/stop control. LED address unknown."
+    },
+    {
+      "id": "deckA.keylock",
+      "section": "deckA",
+      "label": "Keylock (Deck A)",
+      "kind": "button",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.8 (PDF p.11) #36",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "90",
+          "data1": "1B",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key 'keylock'"
+        }
+      ],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "Manual does not explicitly say it lights; may have an LED."
+    },
+    {
+      "id": "deckA.pitchRange",
+      "section": "deckA",
+      "label": "Pitch Range (Deck A)",
+      "kind": "button",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.8 (PDF p.11) #37",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "90",
+          "data1": "1A",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key 'NumarkNS7.rate_range'; script cycles 8/10/30/100%; manual says 8/16/50%"
+        }
+      ],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "Cycles +/-8, 16, 50% (manual p.22)."
+    },
+    {
+      "id": "deckA.pitchFader",
+      "section": "deckA",
+      "label": "Pitch Fader (Deck A)",
+      "kind": "fader",
+      "instruction": "move from min to max",
+      "manual_ref": "Reference manual v1.1 p.8 (PDF p.11) #38",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "B0",
+          "data1": "04",
+          "source": "hw-2026-09-27",
+          "verified": true,
+          "note": "observed but unidentified; likely this"
+        },
+        {
+          "status": "B0",
+          "data1": "04",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key 'rate'"
+        }
+      ],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "Top = minimum, bottom = maximum per calibration (p.27-28). Possibly 14-bit with LSB on B0 24 (unverified guess)."
+    },
+    {
+      "id": "deckA.pitchZeroLed",
+      "section": "deckA",
+      "label": "Pitch 0% LED (Deck A)",
+      "kind": "led",
+      "instruction": "observe only",
+      "manual_ref": "Reference manual v1.1 p.8 (PDF p.11) #38",
+      "midi_expected": true,
+      "expected_input": [],
+      "expected_led": [],
+      "uncertain": true,
+      "notes": "'An LED next to the fader will light up when set at 0%' - may be driven by firmware locally, not by host MIDI."
+    },
+    {
+      "id": "deckA.pitchBendUp",
+      "section": "deckA",
+      "label": "Pitch Bend + (Deck A)",
+      "kind": "button",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.8 (PDF p.11) #39",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "90",
+          "data1": "19",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key 'rate_temp_up'"
+        }
+      ],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": ""
+    },
+    {
+      "id": "deckA.pitchBendDown",
+      "section": "deckA",
+      "label": "Pitch Bend - (Deck A)",
+      "kind": "button",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.8 (PDF p.11) #39",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "90",
+          "data1": "18",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key 'rate_temp_down'"
+        }
+      ],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": ""
+    },
+    {
+      "id": "deckB.platterRotation",
+      "section": "deckB",
+      "label": "Platter rotation (Deck B)",
+      "kind": "platter",
+      "instruction": "spin forward then backward",
+      "manual_ref": "Reference manual v1.1 p.7 (PDF p.10) #13",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "B0",
+          "data1": "02",
+          "source": "hw-2026-09-27",
+          "verified": true,
+          "note": "7-bit CC stream while platter turns"
+        },
+        {
+          "status": "E2",
+          "data1": null,
+          "source": "hw-2026-09-27",
+          "verified": true,
+          "note": "pitchbend lsb msb stream while platter turns (14-bit position/speed)"
+        },
+        {
+          "status": "B0",
+          "data1": "02",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key 'NumarkNS7.jog_move'; script treats value as 7-bit wrapping position"
+        }
+      ],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "Motorized 7\" direct-drive platter; with motor on it streams continuously. Manual p.21: turning the aluminium edge without touching the vinyl nudges in Scratch Mode."
+    },
+    {
+      "id": "deckB.platterTouch",
+      "section": "deckB",
+      "label": "Platter touch sensor (Deck B)",
+      "kind": "touch",
+      "instruction": "touch and release",
+      "manual_ref": "Reference manual v1.1 p.21 (PDF p.24) #13",
+      "midi_expected": true,
+      "expected_input": [],
+      "expected_led": [],
+      "uncertain": true,
+      "notes": "Manual p.21 (PDF p.24) 'The NS7's PLATTERS are touch-sensitive' (touching the vinyl top stops playback in Scratch Mode). No Mixxx mapping and no hardware observation yet; message unknown. Touch the black vinyl top without turning it."
+    },
+    {
+      "id": "deckB.play",
+      "section": "deckB",
+      "label": "Play/Pause (Deck B)",
+      "kind": "button+led",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.7 (PDF p.10) #14",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "90",
+          "data1": "32",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key 'play'"
+        }
+      ],
+      "expected_led": [
+        {
+          "status": "B0",
+          "data1": "1F",
+          "on": "7F",
+          "off": "00",
+          "source": "hw-2026-09-27",
+          "verified": true
+        },
+        {
+          "status": "B0",
+          "data1": "1F",
+          "on": "7F",
+          "off": "00",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx output 'play'"
+        }
+      ],
+      "uncertain": false,
+      "notes": "Play rate from pause->play and play->pause is set by START TIME / STOP TIME knobs (in software)."
+    },
+    {
+      "id": "deckB.cue",
+      "section": "deckB",
+      "label": "Cue (Deck B)",
+      "kind": "button+led",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.7 (PDF p.10) #15",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "90",
+          "data1": "31",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key 'cue_default'; collides with Deck A reloop_exit (90 31) in the Mixxx map"
+        }
+      ],
+      "expected_led": [
+        {
+          "status": "B0",
+          "data1": "1E",
+          "on": "7F",
+          "off": "00",
+          "source": "hw-2026-09-27",
+          "verified": true
+        },
+        {
+          "status": "B0",
+          "data1": "1E",
+          "on": "7F",
+          "off": "00",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx output 'cue_default'"
+        }
+      ],
+      "uncertain": false,
+      "notes": ""
+    },
+    {
+      "id": "deckB.sync",
+      "section": "deckB",
+      "label": "Sync (Deck B)",
+      "kind": "button+led",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.7 (PDF p.10) #16",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "90",
+          "data1": "30",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key 'beatsync'"
+        }
+      ],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "Manual p.22: SYNC button flashes when engaged, so it has an LED; LED address unknown."
+    },
+    {
+      "id": "deckB.startTime",
+      "section": "deckB",
+      "label": "Start Time knob (Deck B)",
+      "kind": "knob",
+      "instruction": "turn fully left then fully right",
+      "manual_ref": "Reference manual v1.1 p.7 (PDF p.10) #17",
+      "midi_expected": true,
+      "expected_input": [],
+      "expected_led": [],
+      "uncertain": true,
+      "notes": "Manual #17 'START TIME / STOP TIME' is one item number; assumed to be two separate knobs per deck. Not in Mixxx map."
+    },
+    {
+      "id": "deckB.stopTime",
+      "section": "deckB",
+      "label": "Stop Time knob (Deck B)",
+      "kind": "knob",
+      "instruction": "turn fully left then fully right",
+      "manual_ref": "Reference manual v1.1 p.7 (PDF p.10) #17",
+      "midi_expected": true,
+      "expected_input": [],
+      "expected_led": [],
+      "uncertain": true,
+      "notes": "See startTime: assumed separate knob sharing manual #17. Not in Mixxx map."
+    },
+    {
+      "id": "deckB.bleepReverse",
+      "section": "deckB",
+      "label": "Bleep / Reverse switch (Deck B)",
+      "kind": "switch",
+      "instruction": "flip through every position",
+      "manual_ref": "Reference manual v1.1 p.7 (PDF p.10) #18",
+      "midi_expected": true,
+      "expected_input": [],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "3-position lever: REVERSE (latching), center (off), BLEEP (momentary, held). Flip to REVERSE, back to center, hold BLEEP, release. Not in Mixxx map."
+    },
+    {
+      "id": "deckB.deleteCue",
+      "section": "deckB",
+      "label": "Delete Cue (Deck B)",
+      "kind": "button+led",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.7 (PDF p.10) #19",
+      "midi_expected": true,
+      "expected_input": [],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "Lit bright red in Delete Cue Mode. Not in Mixxx map."
+    },
+    {
+      "id": "deckB.hotcue1",
+      "section": "deckB",
+      "label": "Hot Cue 1 (Deck B)",
+      "kind": "button+led",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.7 (PDF p.10) #20",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "90",
+          "data1": "34",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key 'hotcue_1_activate'"
+        }
+      ],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "LED lights white when a cue is set, red in Delete Cue Mode (bi-colour). Also used for calibration prompts (p.27). LED address unknown."
+    },
+    {
+      "id": "deckB.hotcue2",
+      "section": "deckB",
+      "label": "Hot Cue 2 (Deck B)",
+      "kind": "button+led",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.7 (PDF p.10) #20",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "90",
+          "data1": "35",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key 'hotcue_2_activate'"
+        }
+      ],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "LED lights white when a cue is set, red in Delete Cue Mode (bi-colour). Also used for calibration prompts (p.27). LED address unknown."
+    },
+    {
+      "id": "deckB.hotcue3",
+      "section": "deckB",
+      "label": "Hot Cue 3 (Deck B)",
+      "kind": "button+led",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.7 (PDF p.10) #20",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "90",
+          "data1": "36",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key 'hotcue_3_activate'"
+        }
+      ],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "LED lights white when a cue is set, red in Delete Cue Mode (bi-colour). Also used for calibration prompts (p.27). LED address unknown."
+    },
+    {
+      "id": "deckB.hotcue4",
+      "section": "deckB",
+      "label": "Hot Cue 4 (Deck B)",
+      "kind": "button+led",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.7 (PDF p.10) #20",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "90",
+          "data1": "37",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key 'hotcue_4_activate'"
+        }
+      ],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "LED lights white when a cue is set, red in Delete Cue Mode (bi-colour). Also used for calibration prompts (p.27). LED address unknown."
+    },
+    {
+      "id": "deckB.hotcue5",
+      "section": "deckB",
+      "label": "Hot Cue 5 (Deck B)",
+      "kind": "button+led",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.7 (PDF p.10) #20",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "90",
+          "data1": "38",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key 'hotcue_5_activate'"
+        }
+      ],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "LED lights white when a cue is set, red in Delete Cue Mode (bi-colour). Also used for calibration prompts (p.27). LED address unknown."
+    },
+    {
+      "id": "deckB.loopOnOff",
+      "section": "deckB",
+      "label": "Loop On/Off (Deck B)",
+      "kind": "button",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.7 (PDF p.10) #21",
+      "midi_expected": true,
+      "expected_input": [],
+      "expected_led": [],
+      "uncertain": true,
+      "notes": "Not clearly in Mixxx map (Mixxx 'reloop_exit' was assigned to deckX.loopReloop but could be this button). LED presence not stated in manual."
+    },
+    {
+      "id": "deckB.loopIn",
+      "section": "deckB",
+      "label": "Loop In / Autoloop 1 beat (Deck B)",
+      "kind": "button+led",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.7 (PDF p.10) #22",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "90",
+          "data1": "49",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key 'loop_in'"
+        }
+      ],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "Manual Mode: IN; Autoloop Mode (p.8 #26): 1-beat loop, lights white when active (p.23)."
+    },
+    {
+      "id": "deckB.loopOut",
+      "section": "deckB",
+      "label": "Loop Out / Autoloop 2 beats (Deck B)",
+      "kind": "button+led",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.7 (PDF p.10) #23",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "90",
+          "data1": "50",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key 'loop_out'; Deck B value 0x50 breaks the +0x21 deck offset pattern (0x29+0x21=0x4A); suspect"
+        }
+      ],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "Manual Mode: OUT; Autoloop Mode: 2-beat loop, lights white when active."
+    },
+    {
+      "id": "deckB.loopSelect",
+      "section": "deckB",
+      "label": "Loop Select / Autoloop 4 beats (Deck B)",
+      "kind": "button+led",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.7 (PDF p.10) #24",
+      "midi_expected": true,
+      "expected_input": [],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "Manual Mode: SELECT; Autoloop Mode: 4-beat loop, lights white when active. Not in Mixxx map."
+    },
+    {
+      "id": "deckB.loopReloop",
+      "section": "deckB",
+      "label": "Reloop / Autoloop 8 beats (Deck B)",
+      "kind": "button+led",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.7 (PDF p.10) #25",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "90",
+          "data1": "52",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key 'reloop_exit'; physical button assignment is a guess"
+        }
+      ],
+      "expected_led": [],
+      "uncertain": true,
+      "notes": "Manual Mode: RELOOP; Autoloop Mode: 8-beat loop. Mixxx reloop_exit mapped here, but it may actually be ON/OFF (#21)."
+    },
+    {
+      "id": "deckB.loopMode",
+      "section": "deckB",
+      "label": "Loop Mode (Manual/Autoloop) (Deck B)",
+      "kind": "button+led",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.8 (PDF p.11) #26",
+      "midi_expected": true,
+      "expected_input": [],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "Lit red in Manual Mode, white in Autoloop Mode (p.23). Not in Mixxx map."
+    },
+    {
+      "id": "deckB.loopHalve",
+      "section": "deckB",
+      "label": "Loop 1/2 X (Deck B)",
+      "kind": "button",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.8 (PDF p.11) #27",
+      "midi_expected": true,
+      "expected_input": [],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "Not in Mixxx map."
+    },
+    {
+      "id": "deckB.loopDouble",
+      "section": "deckB",
+      "label": "Loop 2 X (Deck B)",
+      "kind": "button",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.8 (PDF p.11) #28",
+      "midi_expected": true,
+      "expected_input": [],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "Not in Mixxx map."
+    },
+    {
+      "id": "deckB.loopShiftLeft",
+      "section": "deckB",
+      "label": "Loop Shift Left (Deck B)",
+      "kind": "button",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.8 (PDF p.11) #29",
+      "midi_expected": true,
+      "expected_input": [],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "Not in Mixxx map. Moves loop by its own length (not a SHIFT modifier)."
+    },
+    {
+      "id": "deckB.loopShiftRight",
+      "section": "deckB",
+      "label": "Loop Shift Right (Deck B)",
+      "kind": "button",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.8 (PDF p.11) #30",
+      "midi_expected": true,
+      "expected_input": [],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "Not in Mixxx map."
+    },
+    {
+      "id": "deckB.stripSearch",
+      "section": "deckB",
+      "label": "Strip Search (Deck B)",
+      "kind": "touch",
+      "instruction": "slide finger from left to right",
+      "manual_ref": "Reference manual v1.1 p.8 (PDF p.11) #31",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "B0",
+          "data1": "4D",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key 'playposition'"
+        }
+      ],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "Hardware saw B0 4D (unidentified) - consistent with this. Touch strip = whole track length (needle drop). Calibrated at left/right/center (p.28)."
+    },
+    {
+      "id": "deckB.stripLeds",
+      "section": "deckB",
+      "label": "Strip Search position LEDs (Deck B)",
+      "kind": "led",
+      "instruction": "observe only",
+      "manual_ref": "Reference manual v1.1 p.8 (PDF p.11) #31",
+      "midi_expected": true,
+      "expected_input": [],
+      "expected_led": [
+        {
+          "status": "B0",
+          "data1": "53",
+          "on": null,
+          "off": null,
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx output 'playposition' min 0.9 max 0.99 (end-of-track warning); on/off values not given in map"
+        }
+      ],
+      "uncertain": true,
+      "notes": "Manual does not describe LEDs on the strip; inferred only from Mixxx playposition output. Check whether B0 53 lights anything."
+    },
+    {
+      "id": "deckB.trackForward",
+      "section": "deckB",
+      "label": "Track Forward (Deck B)",
+      "kind": "button",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.8 (PDF p.11) #32",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "90",
+          "data1": "41",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key 'fwd'; Mixxx fwd = fast-forward, not next track"
+        }
+      ],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": ""
+    },
+    {
+      "id": "deckB.trackBack",
+      "section": "deckB",
+      "label": "Track Back (Deck B)",
+      "kind": "button",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.8 (PDF p.11) #33",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "90",
+          "data1": "40",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key 'back'; Mixxx back = rewind, not previous track"
+        }
+      ],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": ""
+    },
+    {
+      "id": "deckB.tap",
+      "section": "deckB",
+      "label": "Tap (BPM) (Deck B)",
+      "kind": "button",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.8 (PDF p.11) #34",
+      "midi_expected": true,
+      "expected_input": [],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "Not in Mixxx map."
+    },
+    {
+      "id": "deckB.scratchOff",
+      "section": "deckB",
+      "label": "Scratch Off (motor off) (Deck B)",
+      "kind": "button+led",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.8 (PDF p.11) #35",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "90",
+          "data1": "42",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key 'NumarkNS7.scratch'; script toggles scratch mode"
+        }
+      ],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "Disables the platter motor (Nudge Mode) and is lit when active (p.21). This is the NS7's only motor start/stop control. LED address unknown."
+    },
+    {
+      "id": "deckB.keylock",
+      "section": "deckB",
+      "label": "Keylock (Deck B)",
+      "kind": "button",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.8 (PDF p.11) #36",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "90",
+          "data1": "3C",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key 'keylock'"
+        }
+      ],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "Manual does not explicitly say it lights; may have an LED."
+    },
+    {
+      "id": "deckB.pitchRange",
+      "section": "deckB",
+      "label": "Pitch Range (Deck B)",
+      "kind": "button",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.8 (PDF p.11) #37",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "90",
+          "data1": "3B",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key 'NumarkNS7.rate_range'; script cycles 8/10/30/100%; manual says 8/16/50%"
+        }
+      ],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "Cycles +/-8, 16, 50% (manual p.22)."
+    },
+    {
+      "id": "deckB.pitchFader",
+      "section": "deckB",
+      "label": "Pitch Fader (Deck B)",
+      "kind": "fader",
+      "instruction": "move from min to max",
+      "manual_ref": "Reference manual v1.1 p.8 (PDF p.11) #38",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "B0",
+          "data1": "05",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key 'rate'"
+        }
+      ],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "Top = minimum, bottom = maximum per calibration (p.27-28). Possibly 14-bit with LSB on B0 25 (unverified guess)."
+    },
+    {
+      "id": "deckB.pitchZeroLed",
+      "section": "deckB",
+      "label": "Pitch 0% LED (Deck B)",
+      "kind": "led",
+      "instruction": "observe only",
+      "manual_ref": "Reference manual v1.1 p.8 (PDF p.11) #38",
+      "midi_expected": true,
+      "expected_input": [],
+      "expected_led": [],
+      "uncertain": true,
+      "notes": "'An LED next to the fader will light up when set at 0%' - may be driven by firmware locally, not by host MIDI."
+    },
+    {
+      "id": "deckB.pitchBendUp",
+      "section": "deckB",
+      "label": "Pitch Bend + (Deck B)",
+      "kind": "button",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.8 (PDF p.11) #39",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "90",
+          "data1": "3A",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key 'rate_temp_up'"
+        }
+      ],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": ""
+    },
+    {
+      "id": "deckB.pitchBendDown",
+      "section": "deckB",
+      "label": "Pitch Bend - (Deck B)",
+      "kind": "button",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.8 (PDF p.11) #39",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "90",
+          "data1": "39",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key 'rate_temp_down'"
+        }
+      ],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": ""
+    },
+    {
+      "id": "mixer.ch1Gain",
+      "section": "mixer",
+      "label": "Gain Trim (Channel 1)",
+      "kind": "knob",
+      "instruction": "turn fully left then fully right",
+      "manual_ref": "Reference manual v1.1 p.6 (PDF p.9) #1",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "B0",
+          "data1": "0C",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key 'pregain'"
+        }
+      ],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": ""
+    },
+    {
+      "id": "mixer.ch1Treble",
+      "section": "mixer",
+      "label": "EQ Treble (Channel 1)",
+      "kind": "knob",
+      "instruction": "turn fully left then fully right",
+      "manual_ref": "Reference manual v1.1 p.6 (PDF p.9) #2",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "B0",
+          "data1": "0B",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key 'filterHigh'"
+        }
+      ],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "Full left = kill (p.19); no separate kill buttons on NS7."
+    },
+    {
+      "id": "mixer.ch1Mid",
+      "section": "mixer",
+      "label": "EQ Mid (Channel 1)",
+      "kind": "knob",
+      "instruction": "turn fully left then fully right",
+      "manual_ref": "Reference manual v1.1 p.6 (PDF p.9) #3",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "B0",
+          "data1": "0A",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key 'filterMid'"
+        }
+      ],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "Full left = kill."
+    },
+    {
+      "id": "mixer.ch1Bass",
+      "section": "mixer",
+      "label": "EQ Bass (Channel 1)",
+      "kind": "knob",
+      "instruction": "turn fully left then fully right",
+      "manual_ref": "Reference manual v1.1 p.6 (PDF p.9) #4",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "B0",
+          "data1": "09",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key 'filterLow'"
+        }
+      ],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "Full left = kill."
+    },
+    {
+      "id": "mixer.ch1Fader",
+      "section": "mixer",
+      "label": "Channel Fader (Channel 1)",
+      "kind": "fader",
+      "instruction": "move from min to max",
+      "manual_ref": "Reference manual v1.1 p.6 (PDF p.9) #5",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "B0",
+          "data1": "08",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key 'volume'"
+        }
+      ],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": ""
+    },
+    {
+      "id": "mixer.ch2Gain",
+      "section": "mixer",
+      "label": "Gain Trim (Channel 2)",
+      "kind": "knob",
+      "instruction": "turn fully left then fully right",
+      "manual_ref": "Reference manual v1.1 p.6 (PDF p.9) #1",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "B0",
+          "data1": "11",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key 'pregain'"
+        }
+      ],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": ""
+    },
+    {
+      "id": "mixer.ch2Treble",
+      "section": "mixer",
+      "label": "EQ Treble (Channel 2)",
+      "kind": "knob",
+      "instruction": "turn fully left then fully right",
+      "manual_ref": "Reference manual v1.1 p.6 (PDF p.9) #2",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "B0",
+          "data1": "10",
+          "source": "hw-2026-09-27",
+          "verified": true,
+          "note": "observed but unidentified; likely this"
+        },
+        {
+          "status": "B0",
+          "data1": "10",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key 'filterHigh'"
+        }
+      ],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "Full left = kill (p.19); no separate kill buttons on NS7."
+    },
+    {
+      "id": "mixer.ch2Mid",
+      "section": "mixer",
+      "label": "EQ Mid (Channel 2)",
+      "kind": "knob",
+      "instruction": "turn fully left then fully right",
+      "manual_ref": "Reference manual v1.1 p.6 (PDF p.9) #3",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "B0",
+          "data1": "0F",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key 'filterMid'"
+        }
+      ],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "Full left = kill."
+    },
+    {
+      "id": "mixer.ch2Bass",
+      "section": "mixer",
+      "label": "EQ Bass (Channel 2)",
+      "kind": "knob",
+      "instruction": "turn fully left then fully right",
+      "manual_ref": "Reference manual v1.1 p.6 (PDF p.9) #4",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "B0",
+          "data1": "0E",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key 'filterLow'"
+        }
+      ],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "Full left = kill."
+    },
+    {
+      "id": "mixer.ch2Fader",
+      "section": "mixer",
+      "label": "Channel Fader (Channel 2)",
+      "kind": "fader",
+      "instruction": "move from min to max",
+      "manual_ref": "Reference manual v1.1 p.6 (PDF p.9) #5",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "B0",
+          "data1": "0D",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key 'volume'"
+        }
+      ],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": ""
+    },
+    {
+      "id": "mixer.crossfader",
+      "section": "mixer",
+      "label": "Crossfader",
+      "kind": "fader",
+      "instruction": "move from min to max",
+      "manual_ref": "Reference manual v1.1 p.6 (PDF p.9) #6",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "B0",
+          "data1": "07",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key 'crossfader'; a commented-out Mixxx entry suggests an LSB on B0 1F"
+        }
+      ],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "Replaceable CP-PRO crossfader."
+    },
+    {
+      "id": "mixer.masterVolume",
+      "section": "mixer",
+      "label": "Master Volume",
+      "kind": "knob",
+      "instruction": "turn fully left then fully right",
+      "manual_ref": "Reference manual v1.1 p.6 (PDF p.9) #7",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "B0",
+          "data1": "40",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key '[Master] volume'"
+        }
+      ],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": ""
+    },
+    {
+      "id": "mixer.boothVolume",
+      "section": "mixer",
+      "label": "Booth Volume",
+      "kind": "knob",
+      "instruction": "turn fully left then fully right",
+      "manual_ref": "Reference manual v1.1 p.6 (PDF p.9) #8",
+      "midi_expected": true,
+      "expected_input": [],
+      "expected_led": [],
+      "uncertain": true,
+      "notes": "Not in Mixxx map; may be analog (no MIDI)."
+    },
+    {
+      "id": "mixer.headphoneMix",
+      "section": "mixer",
+      "label": "Headphone (Cue) Mix fader",
+      "kind": "fader",
+      "instruction": "move from min to max",
+      "manual_ref": "Reference manual v1.1 p.6 (PDF p.9) #9",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "B0",
+          "data1": "12",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key 'headMix'"
+        }
+      ],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "Small horizontal fader blending CH1/CH2 pre-fader cue; NS7 has no per-channel PFL/cue buttons."
+    },
+    {
+      "id": "mixer.headphoneMode",
+      "section": "mixer",
+      "label": "Headphone Mode switch (MASTER / CH1 CH2)",
+      "kind": "switch",
+      "instruction": "flip through every position",
+      "manual_ref": "Reference manual v1.1 p.6 (PDF p.9) #10",
+      "midi_expected": true,
+      "expected_input": [],
+      "expected_led": [],
+      "uncertain": true,
+      "notes": "Not in Mixxx map; unknown whether it sends MIDI."
+    },
+    {
+      "id": "mixer.meterMode",
+      "section": "mixer",
+      "label": "Meter Mode switch (MASTER / CH1-CH2)",
+      "kind": "switch",
+      "instruction": "flip through every position",
+      "manual_ref": "Reference manual v1.1 p.6 (PDF p.9) #11",
+      "midi_expected": true,
+      "expected_input": [],
+      "expected_led": [],
+      "uncertain": true,
+      "notes": "Not in Mixxx map; unknown whether it sends MIDI."
+    },
+    {
+      "id": "mixer.ledMeters",
+      "section": "mixer",
+      "label": "LED Meters (L/R)",
+      "kind": "led",
+      "instruction": "observe only",
+      "manual_ref": "Reference manual v1.1 p.6 (PDF p.9) #12",
+      "midi_expected": true,
+      "expected_input": [],
+      "expected_led": [
+        {
+          "status": "B0",
+          "data1": "36",
+          "on": null,
+          "off": null,
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx output '[Master] vu_meter' (scaled value, no on/off); right meter address unknown"
+        }
+      ],
+      "uncertain": false,
+      "notes": "Two meters: stereo program mix, or CH1 left / CH2 right depending on Meter Mode."
+    },
+    {
+      "id": "mixer.xfaderReverseLed",
+      "section": "mixer",
+      "label": "XFADER REVERSE indicator LED",
+      "kind": "led",
+      "instruction": "observe only",
+      "manual_ref": "Reference manual v1.1 p.5 (PDF p.8) #10",
+      "midi_expected": true,
+      "expected_input": [],
+      "expected_led": [],
+      "uncertain": true,
+      "notes": "Top-panel LED lit when the front-panel XFADER REVERSE switch is on; may be firmware-driven."
+    },
+    {
+      "id": "mixer.bpmMeter",
+      "section": "mixer",
+      "label": "BPM Meter (LED arc)",
+      "kind": "led",
+      "instruction": "observe only",
+      "manual_ref": "Reference manual v1.1 p.8 (PDF p.11) #40",
+      "midi_expected": true,
+      "expected_input": [],
+      "expected_led": [],
+      "uncertain": true,
+      "notes": "Center LED meter; white center LED = BPMs matched; also used for loop adjustment. Host message unknown."
+    },
+    {
+      "id": "browse.scrollKnob",
+      "section": "browse",
+      "label": "Scroll Knob (rotate)",
+      "kind": "encoder",
+      "instruction": "turn clockwise then counter-clockwise",
+      "manual_ref": "Reference manual v1.1 p.8 (PDF p.11) #41",
+      "midi_expected": true,
+      "expected_input": [],
+      "expected_led": [],
+      "uncertain": true,
+      "notes": "Not in Mixxx map; message unknown."
+    },
+    {
+      "id": "browse.scrollPush",
+      "section": "browse",
+      "label": "Scroll Knob (push)",
+      "kind": "button",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.8 (PDF p.11) #41",
+      "midi_expected": true,
+      "expected_input": [],
+      "expected_led": [],
+      "uncertain": true,
+      "notes": "Manual says it can be pressed to move between panels. Not in Mixxx map."
+    },
+    {
+      "id": "browse.fwd",
+      "section": "browse",
+      "label": "FWD (panel navigation)",
+      "kind": "button",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.8 (PDF p.11) #42",
+      "midi_expected": true,
+      "expected_input": [],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "Not in Mixxx map (Mixxx fwd/back entries are deck Track Fwd/Back)."
+    },
+    {
+      "id": "browse.back",
+      "section": "browse",
+      "label": "BACK (panel navigation)",
+      "kind": "button",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.8 (PDF p.11) #42",
+      "midi_expected": true,
+      "expected_input": [],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "Not in Mixxx map."
+    },
+    {
+      "id": "browse.crates",
+      "section": "browse",
+      "label": "Crates",
+      "kind": "button",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.8 (PDF p.11) #43",
+      "midi_expected": true,
+      "expected_input": [],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "Not in Mixxx map."
+    },
+    {
+      "id": "browse.prepare",
+      "section": "browse",
+      "label": "Prepare",
+      "kind": "button",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.8 (PDF p.11) #44",
+      "midi_expected": true,
+      "expected_input": [],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "Not in Mixxx map."
+    },
+    {
+      "id": "browse.files",
+      "section": "browse",
+      "label": "Files",
+      "kind": "button",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.8 (PDF p.11) #45",
+      "midi_expected": true,
+      "expected_input": [],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "Not in Mixxx map."
+    },
+    {
+      "id": "browse.loadA",
+      "section": "browse",
+      "label": "Load A",
+      "kind": "button",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.8 (PDF p.11) #46",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "90",
+          "data1": "0C",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key '[Channel1] LoadSelectedTrack'"
+        }
+      ],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": ""
+    },
+    {
+      "id": "browse.loadB",
+      "section": "browse",
+      "label": "Load B",
+      "kind": "button",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.8 (PDF p.11) #46",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "90",
+          "data1": "0E",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key '[Channel2] LoadSelectedTrack'"
+        }
+      ],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": ""
+    },
+    {
+      "id": "browse.loadPrepare",
+      "section": "browse",
+      "label": "Load Prepare",
+      "kind": "button",
+      "instruction": "press and release",
+      "manual_ref": "Reference manual v1.1 p.8 (PDF p.11) #47",
+      "midi_expected": true,
+      "expected_input": [],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "Not in Mixxx map. Possibly 90 0D (between Load A 0C and Load B 0E) - pure guess."
+    },
+    {
+      "id": "front.micAuxSwitch",
+      "section": "front",
+      "label": "Mic / Aux on-off switch",
+      "kind": "switch",
+      "instruction": "flip through every position",
+      "manual_ref": "Reference manual v1.1 p.5 (PDF p.8) #3",
+      "midi_expected": false,
+      "expected_input": [],
+      "expected_led": [],
+      "uncertain": true,
+      "notes": "Mic/Aux path is analog (p.27); switch probably does not send MIDI."
+    },
+    {
+      "id": "front.micAuxGain",
+      "section": "front",
+      "label": "Mic / Aux Gain",
+      "kind": "knob",
+      "instruction": "turn fully left then fully right",
+      "manual_ref": "Reference manual v1.1 p.5 (PDF p.8) #4",
+      "midi_expected": false,
+      "expected_input": [],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "Analog control, excluded from calibration (p.27)."
+    },
+    {
+      "id": "front.micAuxBass",
+      "section": "front",
+      "label": "Mic / Aux Bass",
+      "kind": "knob",
+      "instruction": "turn fully left then fully right",
+      "manual_ref": "Reference manual v1.1 p.5 (PDF p.8) #5",
+      "midi_expected": false,
+      "expected_input": [],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "Analog control (p.27)."
+    },
+    {
+      "id": "front.micAuxTreble",
+      "section": "front",
+      "label": "Mic / Aux Treble",
+      "kind": "knob",
+      "instruction": "turn fully left then fully right",
+      "manual_ref": "Reference manual v1.1 p.5 (PDF p.8) #6",
+      "midi_expected": false,
+      "expected_input": [],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "Analog control (p.27)."
+    },
+    {
+      "id": "front.faderStartLeft",
+      "section": "front",
+      "label": "Fader Start switch (left / Ch1)",
+      "kind": "switch",
+      "instruction": "flip through every position",
+      "manual_ref": "Reference manual v1.1 p.5 (PDF p.8) #7",
+      "midi_expected": true,
+      "expected_input": [],
+      "expected_led": [],
+      "uncertain": true,
+      "notes": "Fader start is executed by the software (p.18), so likely sends MIDI; not in Mixxx map."
+    },
+    {
+      "id": "front.faderStartRight",
+      "section": "front",
+      "label": "Fader Start switch (right / Ch2)",
+      "kind": "switch",
+      "instruction": "flip through every position",
+      "manual_ref": "Reference manual v1.1 p.5 (PDF p.8) #7",
+      "midi_expected": true,
+      "expected_input": [],
+      "expected_led": [],
+      "uncertain": true,
+      "notes": "See faderStartLeft."
+    },
+    {
+      "id": "front.motorTorque",
+      "section": "front",
+      "label": "Motor Torque switch (high/low)",
+      "kind": "switch",
+      "instruction": "flip through every position",
+      "manual_ref": "Reference manual v1.1 p.5 (PDF p.8) #8",
+      "midi_expected": true,
+      "expected_input": [],
+      "expected_led": [],
+      "uncertain": true,
+      "notes": "Single switch for both platters; may act directly on motor controller without MIDI."
+    },
+    {
+      "id": "front.xfaderContour",
+      "section": "front",
+      "label": "Crossfader Contour knob",
+      "kind": "knob",
+      "instruction": "turn fully left then fully right",
+      "manual_ref": "Reference manual v1.1 p.5 (PDF p.8) #9",
+      "midi_expected": true,
+      "expected_input": [],
+      "expected_led": [],
+      "uncertain": true,
+      "notes": "Not in Mixxx map; likely MIDI since mixing is done in software."
+    },
+    {
+      "id": "front.xfaderReverse",
+      "section": "front",
+      "label": "Crossfader Reverse switch",
+      "kind": "switch",
+      "instruction": "flip through every position",
+      "manual_ref": "Reference manual v1.1 p.5 (PDF p.8) #10",
+      "midi_expected": true,
+      "expected_input": [],
+      "expected_led": [],
+      "uncertain": true,
+      "notes": "Lights the top-panel XFADER REVERSE LED. Not in Mixxx map."
+    },
+    {
+      "id": "front.headphoneVolume",
+      "section": "front",
+      "label": "Headphone Volume",
+      "kind": "knob",
+      "instruction": "turn fully left then fully right",
+      "manual_ref": "Reference manual v1.1 p.5 (PDF p.8) #12",
+      "midi_expected": true,
+      "expected_input": [
+        {
+          "status": "B0",
+          "data1": "42",
+          "source": "mixxx",
+          "verified": false,
+          "note": "Mixxx key 'headVolume'"
+        }
+      ],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": ""
+    },
+    {
+      "id": "rear.power",
+      "section": "rear",
+      "label": "Power switch",
+      "kind": "switch",
+      "instruction": "observe only",
+      "manual_ref": "Reference manual v1.1 p.5 (PDF p.8) #6",
+      "midi_expected": false,
+      "expected_input": [],
+      "expected_led": [],
+      "uncertain": false,
+      "notes": "Do not flip during capture (would drop USB)."
+    }
+  ],
+  "unidentified_observed": [
+    {
+      "status": "B0",
+      "data1": "04",
+      "source": "hw-2026-09-27",
+      "guess": "deckA.pitchFader (Mixxx 'rate' [Channel1])"
+    },
+    {
+      "status": "B0",
+      "data1": "10",
+      "source": "hw-2026-09-27",
+      "guess": "mixer.ch2Treble (Mixxx 'filterHigh' [Channel2])"
+    },
+    {
+      "status": "B0",
+      "data1": "4D",
+      "source": "hw-2026-09-27",
+      "guess": "deckB.stripSearch (Mixxx 'playposition' [Channel2])"
+    },
+    {
+      "status": "B0",
+      "data1": "24",
+      "source": "hw-2026-09-27",
+      "guess": "no Mixxx entry; possibly 14-bit LSB of B0 04 (04+20) = deckA.pitchFader LSB"
+    },
+    {
+      "status": "B0",
+      "data1": "30",
+      "source": "hw-2026-09-27",
+      "guess": "no Mixxx entry; possibly 14-bit LSB of B0 10 (10+20) = mixer.ch2Treble LSB"
+    },
+    {
+      "status": "B0",
+      "data1": "6E",
+      "source": "hw-2026-09-27",
+      "guess": "no Mixxx entry; possibly LSB near B0 4D/4E (+20) = deckB.stripSearch LSB"
+    }
+  ],
+  "mixxx_unmapped": [
+    {
+      "status": "B0",
+      "data1": "14",
+      "direction": "output",
+      "key": "[Channel1] pfl",
+      "note": "Original NS7 has no PFL/cue buttons (headphone cue is the HEADPHONE MIX fader); unknown what this lights"
+    },
+    {
+      "status": "B0",
+      "data1": "18",
+      "direction": "output",
+      "key": "[Channel2] pfl",
+      "note": "As above"
+    },
+    {
+      "status": "B0",
+      "data1": "1F",
+      "direction": "input",
+      "key": "[Master] NumarkNS7.crossfader_lsb",
+      "note": "Commented out in the XML; B0 1F is also the Play B LED address (output)"
+    }
+  ]
+}
