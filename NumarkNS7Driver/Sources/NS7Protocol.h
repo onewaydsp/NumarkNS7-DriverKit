@@ -548,6 +548,17 @@ public:
         return n;
     }
 
+    // Consumer side. Drops everything queued so far; returns the count. The
+    // producer writes whole messages, so the next Read starts at a message
+    // boundary (a SysEx may still continue past it).
+    uint32_t Discard()
+    {
+        const uint32_t tail = mTail.load(std::memory_order_relaxed);
+        const uint32_t head = mHead.load(std::memory_order_acquire);
+        mTail.store(head, std::memory_order_release);
+        return head - tail;
+    }
+
 private:
     std::atomic<uint32_t> mHead { 0 };
     std::atomic<uint32_t> mTail { 0 };
@@ -883,6 +894,11 @@ inline uint64_t IsoRetryFrame(uint64_t now, uint64_t lead, uint64_t queuedEnd)
 //     accepted submission or an OK completion resets the backoff.
 //   - A bulk STALL (on completion, or from the submission) clears the STALL
 //     before the next submission of that slot.
+//   - A bulk STALL on completion is cleared and resubmitted in place once;
+//     a slot that stalls again with no OK completion in between is Failed
+//     instead and backs off by its streak (1, 2, 4, 8, then 16 ticks), so a
+//     pipe that stalls every transfer cannot loop on the completion path.
+//     An OK completion or a wake ends the streak.
 //   - Per iso pipe, a tick with no completion and no accepted re-arm counts
 //     as stuck; after kStuckTicks such ticks in a row, with at least one
 //     request armed, EndTick asks for that pipe (only) to be aborted, so
@@ -958,7 +974,7 @@ public:
         Slot & s = mSlots[g][i];
         const bool ok = status == 0 || status == kStatusUnderrun;
         const bool stalled = status == kStatusStalled;
-        if (ok) s.fails = 0;
+        if (ok) s.fails = s.stalls = 0;
         if (stalled) s.needClear = true;
         if (mSleeping) {
             s.state = State::Idle;
@@ -970,6 +986,11 @@ public:
                 s.state = State::Pending;
                 return Next::Submit;
             }
+        } else if (stalled && s.stalls++ > 0) {
+            // Stalled again with no OK completion since: retry from ticks,
+            // backing off by the streak (the second STALL waits 1 tick).
+            if (s.stalls > kMaxStallStreak) s.stalls = kMaxStallStreak;
+            s.fails = uint8_t(s.stalls - 2);
         } else if (ok || stalled) {
             s.state = State::Pending;
             return stalled ? Next::ClearStallThenSubmit : Next::Submit;
@@ -1005,7 +1026,7 @@ public:
             mCompletions[g] = mSubmittedOk[g] = mStuck[g] = 0;
             for (uint32_t i = 0; i < mCount[g]; i++) {
                 Slot & s = mSlots[g][i];
-                s.fails = 0;
+                s.fails = s.stalls = 0;
                 if (s.state == State::Failed) s.state = State::Idle;
             }
         }
@@ -1026,9 +1047,12 @@ private:
     struct Slot {
         State    state     = State::Idle;
         uint8_t  fails     = 0;       // consecutive failures, for the backoff
+        uint8_t  stalls    = 0;       // bulk: STALL completions since the last OK one
         bool     needClear = false;   // clear a STALL before the next submission
         uint64_t dueTick   = 0;       // Failed: first tick it may be retried on
     };
+
+    static constexpr uint8_t kMaxStallStreak = 8;   // backoff is capped long before
 
     bool Valid(Group g, uint32_t i) const { return g < kGroupCount && i < mCount[g]; }
 

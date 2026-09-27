@@ -285,6 +285,12 @@ NS7MIDIDriver::NextMidiOutPacket(uint8_t * packet)
 }
 
 uint32_t
+NS7MIDIDriver::DiscardMidiOut()
+{
+    return ivars->midiOut.Discard();
+}
+
+uint32_t
 NS7MIDIDriver::TakeMidiOutDropped()
 {
     return __atomic_exchange_n(&ivars->midiOutDropped, 0, __ATOMIC_RELAXED);

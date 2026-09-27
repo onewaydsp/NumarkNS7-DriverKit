@@ -407,6 +407,8 @@ TransferOk(IOReturn status)
 //   - A failed or skipped slot is retried from the 100 ms watchdog tick with
 //     backoff (100 ms .. 1.6 s); completions never retry failed slots, so a
 //     broken pipe costs at most one attempt per slot per backoff step.
+//   - A bulk STALL is cleared and resubmitted from the completion only once;
+//     stalling again before a good transfer backs off from ticks the same way.
 //   - The watchdog aborts a single iso pipe that has requests armed but saw
 //     no completion and no re-arm for ~1 s, so requests parked at frames the
 //     bus won't reach come back and are retried.
@@ -701,6 +703,19 @@ PumpMidiOut(NumarkNS7Device_IVars * iv)
     if (iv->midiOutState.OnPacketReady(n) == MidiOutAction::Send) SendMidiOut(iv);
 }
 
+// Drops the MIDI output CoreMIDI queued while MIDI out could not send (the
+// system was asleep), so it doesn't reach the NS7 as a stale burst. Runs on
+// the USB queue, the FIFO's only consumer, like PumpMidiOut.
+static void
+DiscardStaleMidiOut(NumarkNS7Device_IVars * iv)
+{
+    NS7MIDIDriver * client = CopyMidiClient(iv);
+    if (client == nullptr) return;
+    const uint32_t n = client->DiscardMidiOut();
+    client->release();
+    if (n) Log("MIDI out: dropped %u bytes queued while asleep", n);
+}
+
 // Called by the raw MIDI parser for each complete UMP.
 static void
 OnMidiInUmp(void * ctx, const uint32_t * words, size_t count)
@@ -830,7 +845,8 @@ IMPL(NumarkNS7Device, CaptureComplete)
     } else {
         NoteError(iv, kPipeCapture, status);
     }
-    // Resubmit (after ClearStall on a STALL), or idle until a tick or wake.
+    // Resubmit (after ClearStall on a first STALL), or idle until a tick or
+    // wake (errors, and a STALL again before any good transfer, back off).
     const Keeper::Next next = iv->keeper.OnCompletion(Keeper::kCapture, i, uint32_t(status));
     if (next != Keeper::Next::Idle)
         SubmitSlot(iv, Keeper::kCapture, i, next == Keeper::Next::ClearStallThenSubmit);
@@ -991,8 +1007,8 @@ CheckHandshakeAfterWake(NumarkNS7Device * self, NumarkNS7Device_IVars * iv)
 // completion resubmits, and MIDI out neither sends nor pumps, while asleep.
 // Any other state after Off (wake): after acknowledging, drop the chains'
 // planned frames (NextIsoFrame then restarts both at the current bus frame +
-// lead), clear every backoff, check the device's stream-enable state, and
-// re-arm every slot.
+// lead), clear every backoff, drop MIDI output queued while asleep, check the
+// device's stream-enable state, and re-arm every slot.
 kern_return_t
 IMPL(NumarkNS7Device, SetPowerState)
 {
@@ -1019,6 +1035,7 @@ IMPL(NumarkNS7Device, SetPowerState)
         iv->playbackFrame = 0;
         iv->feedbackFrame = 0;
         iv->statsIdleTicks = 0;
+        DiscardStaleMidiOut(iv);
         if (!iv->stopping && iv->device) {
             CheckHandshakeAfterWake(this, iv);
             RearmIdle(iv, "wake");

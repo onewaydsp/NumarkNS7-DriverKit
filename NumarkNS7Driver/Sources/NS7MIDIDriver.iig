@@ -35,6 +35,10 @@ public:
     // Returns the number of MIDI bytes packed; 0 means nothing to send.
     uint32_t NextMidiOutPacket(uint8_t * packet) LOCALONLY;
 
+    // Drops all pending CoreMIDI output (the FIFO's consumer side, so call
+    // it only where NextMidiOutPacket may be called). Returns the byte count.
+    uint32_t DiscardMidiOut() LOCALONLY;
+
     // Returns the number of CoreMIDI output messages dropped because the FIFO
     // was full since the last call, and resets it.
     uint32_t TakeMidiOutDropped() LOCALONLY;

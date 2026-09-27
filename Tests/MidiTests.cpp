@@ -481,6 +481,38 @@ TEST(test_fifo_bytes_written_counts_accepted_writes_only)
     CHECK_EQ(f.BytesWritten(), 9u);
 }
 
+TEST(test_fifo_discard_drops_everything_queued)
+{
+    // Consumer side, as after a wake: what CoreMIDI queued while the NS7 was
+    // asleep is dropped, not sent as a stale burst.
+    ByteFifo<8> f;
+    const uint8_t a[5] = { 1, 2, 3, 4, 5 }, b[3] = { 6, 7, 8 };
+    CHECK_EQ(f.Discard(), 0u);                  // empty: nothing to drop
+    CHECK(f.Write(a, 5));
+    uint8_t out[8] = {};
+    CHECK_EQ(f.Read(out, 2), 2u);
+    CHECK(f.Write(b, 3));                       // wraps
+    CHECK_EQ(f.Discard(), 6u);
+    CHECK_EQ(f.Size(), 0u);
+    CHECK_EQ(f.Read(out, sizeof out), 0u);
+    CHECK_EQ(f.BytesWritten(), 8u);             // diagnostics unchanged
+    // The whole buffer is free again, and later writes read back in order.
+    const uint8_t full[8] = { 9, 10, 11, 12, 13, 14, 15, 16 };
+    CHECK(f.Write(full, 8));
+    CHECK_EQ(f.Read(out, sizeof out), 8u);
+    CHECK(memcmp(out, full, 8) == 0);
+}
+
+TEST(test_next_midi_out_packet_after_discard_is_empty)
+{
+    MidiOutFifo f;
+    const uint8_t note[3] = { 0x90, 0x3C, 0x7F };
+    for (int j = 0; j < 40; j++) CHECK(f.Write(note, 3));
+    f.Discard();
+    uint8_t pkt[kMidiPacketBytes];
+    CHECK_EQ(NextMidiOutPacket(f, pkt), 0u);
+}
+
 TEST(test_queue_ump_channel_voice_as_raw_bytes)
 {
     ByteFifo<64> f;

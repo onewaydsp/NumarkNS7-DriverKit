@@ -182,6 +182,104 @@ TEST(test_keeper_bulk_stall_on_completion_clears_then_submits)
     CHECK(k.IsArmed(SK::kCapture, 0));
 }
 
+namespace {
+
+// Stalls slot `i` of a bulk group again (no OK completion since the last)
+// and returns how many ticks pass before the watchdog resubmits it; each
+// resubmit clears the STALL first and is accepted.
+uint32_t RestallGap(SK & k, SK::Group g, uint32_t i)
+{
+    CHECK(k.OnCompletion(g, i, kStall) == Next::Idle);    // not resubmitted in place
+    CHECK_EQ(uint32_t(Collect(k).size()), 0u);            // nor before a tick
+    uint32_t waited = 0;
+    for (;;) {
+        k.BeginTick();
+        const auto work = Collect(k);
+        waited++;
+        if (!work.empty() || waited >= 100) {
+            CHECK_EQ(uint32_t(work.size()), 1u);
+            for (const auto & w : work) {
+                CHECK(w.clearStall);
+                k.OnSubmitted(SK::Group(w.group), w.slot, Submit::Ok);
+            }
+            k.EndTick();
+            return waited;
+        }
+        k.EndTick();
+    }
+}
+
+} // namespace
+
+TEST(test_keeper_bulk_stall_after_ok_completion_resubmits_now)
+{
+    // A STALL now and then, with good transfers in between, is cleared and
+    // resubmitted in place every time.
+    SK k = Running();
+    for (int j = 0; j < 5; j++) {
+        CHECK(k.OnCompletion(SK::kMidiIn, 2, kStall) == Next::ClearStallThenSubmit);
+        k.OnSubmitted(SK::kMidiIn, 2, Submit::Ok);
+        CHECK(k.OnCompletion(SK::kMidiIn, 2, kOk) == Next::Submit);
+        k.OnSubmitted(SK::kMidiIn, 2, Submit::Ok);
+    }
+    CHECK(k.IsArmed(SK::kMidiIn, 2));
+}
+
+TEST(test_keeper_repeated_bulk_stalls_back_off_from_ticks)
+{
+    // A pipe that stalls every transfer must not loop ClearStall + resubmit
+    // on the completion path: the first STALL resubmits now, every further
+    // one with no OK completion in between waits for the watchdog, 1, 2, 4,
+    // 8, then 16 ticks.
+    for (SK::Group g : { SK::kCapture, SK::kMidiIn }) {
+        SK k = Running();
+        CHECK(k.OnCompletion(g, 1, kStall) == Next::ClearStallThenSubmit);
+        k.OnSubmitted(g, 1, Submit::Ok);
+        const uint32_t expect[] = { 1, 2, 4, 8, 16, 16, 16 };
+        for (uint32_t gap : expect) CHECK_EQ(RestallGap(k, g, 1), gap);
+        CHECK(k.IsArmed(g, 1));
+        CHECK_EQ(ArmedTotal(k), kTotal);
+    }
+}
+
+TEST(test_keeper_ok_completion_ends_a_stall_streak)
+{
+    SK k = Running();
+    CHECK(k.OnCompletion(SK::kCapture, 0, kStall) == Next::ClearStallThenSubmit);
+    k.OnSubmitted(SK::kCapture, 0, Submit::Ok);
+    CHECK_EQ(RestallGap(k, SK::kCapture, 0), 1u);
+    CHECK_EQ(RestallGap(k, SK::kCapture, 0), 2u);
+    CHECK_EQ(RestallGap(k, SK::kCapture, 0), 4u);
+    CHECK(k.OnCompletion(SK::kCapture, 0, kOk) == Next::Submit);
+    k.OnSubmitted(SK::kCapture, 0, Submit::Ok);
+    CHECK_EQ(k.Failures(SK::kCapture, 0), 0u);
+    // A fresh streak: immediate again, then the backoff starts over.
+    CHECK(k.OnCompletion(SK::kCapture, 0, kStall) == Next::ClearStallThenSubmit);
+    k.OnSubmitted(SK::kCapture, 0, Submit::Ok);
+    CHECK_EQ(RestallGap(k, SK::kCapture, 0), 1u);
+    // Other errors in a streak don't end it.
+    CHECK(k.OnCompletion(SK::kCapture, 0, kErr) == Next::Idle);
+    Tick(k);
+    CHECK(k.IsArmed(SK::kCapture, 0));
+    CHECK(k.OnCompletion(SK::kCapture, 0, kStall) == Next::Idle);
+}
+
+TEST(test_keeper_wake_ends_a_stall_streak)
+{
+    SK k = Running();
+    CHECK(k.OnCompletion(SK::kMidiIn, 4, kStall) == Next::ClearStallThenSubmit);
+    k.OnSubmitted(SK::kMidiIn, 4, Submit::Ok);
+    CHECK_EQ(RestallGap(k, SK::kMidiIn, 4), 1u);
+    CHECK_EQ(RestallGap(k, SK::kMidiIn, 4), 2u);
+    k.OnPowerOff();
+    CHECK(k.OnCompletion(SK::kMidiIn, 4, kReturnAborted) == Next::Idle);
+    k.OnPowerOn();
+    const auto work = Collect(k);
+    CHECK_EQ(uint32_t(work.size()), 1u);
+    for (const auto & w : work) k.OnSubmitted(SK::Group(w.group), w.slot, Submit::Ok);
+    CHECK(k.OnCompletion(SK::kMidiIn, 4, kStall) == Next::ClearStallThenSubmit);
+}
+
 TEST(test_keeper_stalled_submit_retries_with_clear_stall_and_backoff)
 {
     SK k = Running();
@@ -268,6 +366,75 @@ TEST(test_keeper_no_slot_lost_under_random_events)
         }
         CHECK(ArmedTotal(k) <= kTotal);
     }
+    for (int t = 0; t < 40; t++) Tick(k, Submit::Ok);
+    CHECK_EQ(ArmedTotal(k), kTotal);
+}
+
+TEST(test_keeper_no_slot_lost_under_random_events_with_sleep)
+{
+    // As above, with system sleep and wake mixed in. Invariants at every
+    // step: nothing is collected, resubmitted or aborted while asleep; a
+    // collected slot was never armed and is handed out once; and after
+    // waking with every submission succeeding, every slot is armed again.
+    SK k = Running();
+    uint32_t rng = test::Seed() ^ 0x51EE9u;
+    auto next = [&rng] { rng = rng * 1664525u + 1013904223u; return rng >> 8; };
+    const uint32_t statuses[] = { kOk, kErr, kStall, kReturnAborted, kReturnNoDevice, 0xe00002e7 };
+    auto submitResult = [&next] {
+        return next() % 3 ? Submit::Ok : (next() % 2 ? Submit::Error : Submit::Stalled);
+    };
+    uint32_t sleeps = 0, badCollect = 0, badSleep = 0;
+    for (int step = 0; step < 40000; step++) {
+        const auto g = SK::Group(next() % SK::kGroupCount);
+        const uint32_t i = next() % kCounts[g];
+        switch (next() % 16) {
+        case 0: case 1: case 2: case 3: case 4: case 5: case 6: {
+            if (!k.IsArmed(g, i)) break;
+            const Next a = k.OnCompletion(g, i, statuses[next() % 6]);
+            if (k.Sleeping() && a != Next::Idle) badSleep++;
+            if (a != Next::Idle) k.OnSubmitted(g, i, submitResult());
+            break;
+        }
+        case 7: case 8: case 9: case 10: {
+            bool armed[SK::kGroupCount][SK::kMaxSlots] = {}, seen[SK::kGroupCount][SK::kMaxSlots] = {};
+            for (uint32_t gg = 0; gg < SK::kGroupCount; gg++)
+                for (uint32_t ii = 0; ii < kCounts[gg]; ii++) armed[gg][ii] = k.IsArmed(SK::Group(gg), ii);
+            k.BeginTick();
+            const auto work = Collect(k);
+            if (k.Sleeping() && !work.empty()) badSleep++;
+            for (const auto & w : work) {
+                if (armed[w.group][w.slot] || seen[w.group][w.slot]) badCollect++;
+                seen[w.group][w.slot] = true;
+                k.OnSubmitted(SK::Group(w.group), w.slot, submitResult());
+            }
+            const uint32_t abort = k.EndTick();
+            if (k.Sleeping() && abort) badSleep++;
+            // The driver aborts a stuck pipe: its armed requests come back aborted.
+            for (uint32_t gg = SK::kPlayback; gg <= SK::kFeedback; gg++)
+                if (abort & (1u << gg))
+                    for (uint32_t ii = 0; ii < kCounts[gg]; ii++)
+                        if (k.IsArmed(SK::Group(gg), ii))
+                            k.OnCompletion(SK::Group(gg), ii, kReturnAborted);
+            break;
+        }
+        case 11:
+            if (!k.Sleeping()) { k.OnPowerOff(); sleeps++; }
+            break;
+        case 12:
+            // Wake, with a first re-arm as the driver's RearmIdle does.
+            if (k.Sleeping()) {
+                k.OnPowerOn();
+                for (const auto & w : Collect(k)) k.OnSubmitted(SK::Group(w.group), w.slot, submitResult());
+            }
+            break;
+        default: break;
+        }
+        CHECK(ArmedTotal(k) <= kTotal);
+    }
+    CHECK_EQ(badCollect, 0u);
+    CHECK_EQ(badSleep, 0u);
+    CHECK(sleeps > 100u);
+    if (k.Sleeping()) k.OnPowerOn();
     for (int t = 0; t < 40; t++) Tick(k, Submit::Ok);
     CHECK_EQ(ArmedTotal(k), kTotal);
 }
