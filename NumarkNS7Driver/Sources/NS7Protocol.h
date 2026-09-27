@@ -386,6 +386,7 @@ class ByteFifo {
     static_assert(N != 0 && (N & (N - 1)) == 0, "N must be a power of two");
 
 public:
+    // Call only from the producer or consumer thread; a third thread can see a torn head/tail pair.
     uint32_t Size() const
     {
         return mHead.load(std::memory_order_acquire) - mTail.load(std::memory_order_acquire);

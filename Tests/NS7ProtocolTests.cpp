@@ -656,6 +656,19 @@ static void test_fifo_rejects_message_that_does_not_fit_whole()
     CHECK_EQ(f.Size(), 6u);         // nothing partial was written
     CHECK(f.Write(three, 2));       // 2 bytes still fit
     CHECK_EQ(f.Size(), 8u);
+
+    uint8_t out[8] = {};
+    CHECK_EQ(f.Read(out, sizeof out), 8u);
+    const uint8_t expect[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
+    CHECK(memcmp(out, expect, 8) == 0);
+}
+
+static void test_fifo_rejects_write_larger_than_capacity()
+{
+    ByteFifo<8> f;
+    const uint8_t nine[9] = { 1, 2, 3, 4, 5, 6, 7, 8, 9 };
+    CHECK(!f.Write(nine, 9));
+    CHECK_EQ(f.Size(), 0u);
 }
 
 static void test_fifo_read_empty_returns_zero()
@@ -731,6 +744,7 @@ int main()
         T(test_fifo_read_respects_max_and_keeps_rest),
         T(test_fifo_wraps_around),
         T(test_fifo_rejects_message_that_does_not_fit_whole),
+        T(test_fifo_rejects_write_larger_than_capacity),
         T(test_fifo_read_empty_returns_zero),
 #undef T
     };
