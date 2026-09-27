@@ -15,6 +15,8 @@
 // Ploytec startup handshake and keeps the audio pipes streaming. The device
 // only sends MIDI while the audio pipes run (verified on hardware), so they
 // stream silence even with no audio client. MIDI input is parsed to UMP.
+// Start creates the CoreMIDI service (NS7MIDIDriver) in this process with
+// IOService::Create, from the NS7MIDIDriverProperties personality dictionary.
 // Endpoint roles and wire formats are documented in docs/PROTOCOL.md.
 
 #ifndef NumarkNS7Device_h

@@ -120,6 +120,7 @@ struct NumarkNS7Device_IVars
     IOLock        * midiClientLock = nullptr;
     NS7MIDIDriver * midiClient = nullptr;       // guarded by midiClientLock, retained
     NS7MIDIDriver * midiInClient = nullptr;     // set only while MidiInComplete parses
+    IOService     * midiService = nullptr;      // from Create(), retained; nullptr if it failed
 };
 
 bool
@@ -163,6 +164,7 @@ NumarkNS7Device::free()
         ReleaseBulkSlots(&ivars->midiOut, 1);
         OSSafeReleaseNULL(ivars->control);
         OSSafeReleaseNULL(ivars->midiClient);
+        OSSafeReleaseNULL(ivars->midiService);
         if (ivars->midiClientLock) IOLockFree(ivars->midiClientLock);
     }
     IOSafeDeleteNULL(ivars, NumarkNS7Device_IVars, 1);
@@ -783,6 +785,23 @@ IMPL(NumarkNS7Device, Start)
     ret = CreateBuffer(ivars->interfaces[0], 8, &ivars->control, &ivars->controlPtr);
     if (ret != kIOReturnSuccess) goto fail;
 
+    // The CoreMIDI service is created here, in this process, from the
+    // NS7MIDIDriverProperties dictionary of our personality. A separate
+    // matching personality ran in its own dext process on hardware, where it
+    // could not reach this object. Create() waits for NS7MIDIDriver::Start,
+    // which needs only GetUSBDevice() and SetMidiClient(). It is done before
+    // streaming because Start runs on the default queue that services the
+    // USB completions: blocking it after StartStreaming would let the
+    // in-flight feedback requests run out, and the NS7 then stalls its bulk
+    // IN endpoints. MIDI is optional, so a failure is logged, not fatal.
+    {
+        const kern_return_t midiRet = Create(this, "NS7MIDIDriverProperties", &ivars->midiService);
+        if (midiRet != kIOReturnSuccess) {
+            Log("creating NS7MIDIDriver failed: 0x%08x; continuing without MIDI", midiRet);
+            ivars->midiService = nullptr;
+        }
+    }
+
     IOSleep(NS7::kSettleMs);
     ret = Handshake(ivars, this);
     if (ret != kIOReturnSuccess) goto fail;
@@ -794,6 +813,9 @@ IMPL(NumarkNS7Device, Start)
     return kIOReturnSuccess;
 
 fail:
+    // A created service is torn down with its provider only on termination;
+    // a failed Start must remove it explicitly (asynchronous).
+    if (ivars->midiService) ivars->midiService->Terminate(0);
     Stop(provider);
     return ret != kIOReturnSuccess ? ret : kIOReturnError;
 }
@@ -828,6 +850,9 @@ IMPL(NumarkNS7Device, Stop)
         ivars->device->Close(this, 0);
         OSSafeReleaseNULL(ivars->device);
     }
+    // On termination IOKit stops NS7MIDIDriver (our child) before calling
+    // this Stop, so only our reference is left to drop.
+    OSSafeReleaseNULL(ivars->midiService);
     return Stop(provider, SUPERDISPATCH);
 }
 

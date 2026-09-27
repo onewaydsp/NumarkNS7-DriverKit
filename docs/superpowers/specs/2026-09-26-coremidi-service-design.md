@@ -26,7 +26,7 @@ Two IOService classes run in the same dext process (same `IOUserServerName`):
 | Class | Base | Matches on | Owns |
 |---|---|---|---|
 | `NumarkNS7Device` (exists) | `IOService` | `IOUSBHostDevice` 0x15E4/0x0071 | USB: handshake, all pipes, MIDI-in parsing, MIDI-out packets on EP 0x04 |
-| `NS7MIDIDriver` (new) | `IOUserMIDIDriver` | `NumarkNS7Device` (new personality) | CoreMIDI: device, entity, source, destination |
+| `NS7MIDIDriver` (new) | `IOUserMIDIDriver` | created by `NumarkNS7Device` (see below) | CoreMIDI: device, entity, source, destination |
 
 The two talk only through `LOCALONLY` methods (plain types, so iig never has to parse `NS7Protocol.h`):
 
@@ -34,7 +34,9 @@ The two talk only through `LOCALONLY` methods (plain types, so iig never has to 
 - `NS7MIDIDriver::DeliverMidiIn(const uint32_t * words, uint32_t count)` is called on the USB queue with complete UMP messages.
 - `NS7MIDIDriver::NextMidiOutPacket(uint8_t * packet)` is called on the USB queue. It fills one 42-byte EP 0x04 packet from the FIFO, which `NS7MIDIDriver` owns, and returns how many MIDI bytes it packed (0 = nothing to send).
 
-The new personality needs `IOUserMIDIDriverUserClientProperties` (IOClass `IOUserUserClient`, IOUserClass `IOUserMIDIDriverUserClient`), as the MIDIDriverKit headers require. The dext already has the `com.apple.developer.driverkit.family.midi` entitlement.
+`NS7MIDIDriver` is created in-process by `NumarkNS7Device` with `IOService::Create`, from an `NS7MIDIDriverProperties` dictionary in the `NumarkNS7Device` personality. A separate matching personality ran in its own process on hardware, where `OSDynamicCast` to `NumarkNS7Device` failed; `IOUserServerOneProcess` did not change that.
+
+That dictionary needs `IOUserMIDIDriverUserClientProperties` (IOClass `IOUserUserClient`, IOUserClass `IOUserMIDIDriverUserClient`), as the MIDIDriverKit headers require. The dext already has the `com.apple.developer.driverkit.family.midi` entitlement.
 
 Rejected alternatives:
 - Making `NumarkNS7Device` itself the `IOUserMIDIDriver` would mix USB and CoreMIDI code, and it can't also inherit `IOUserAudioDriver` later.

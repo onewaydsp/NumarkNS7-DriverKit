@@ -1,7 +1,9 @@
 // NS7MIDIDriver.iig
 // Publishes the NS7 to CoreMIDI: one device, one entity "MIDI" with one
 // source and one destination, named the way Numark's original driver named
-// them. Matches on NumarkNS7Device and runs in the same dext process.
+// them. NumarkNS7Device creates it in its own process with IOService::Create
+// (from the NS7MIDIDriverProperties dictionary in its personality) and is its
+// provider; a separate matching personality ran in another process.
 // NumarkNS7Device owns all USB I/O and calls the two LOCALONLY methods below
 // on its USB queue: DeliverMidiIn from the EP 0x83 completion, and
 // NextMidiOutPacket to fill each EP 0x04 transfer. The CoreMIDI destination

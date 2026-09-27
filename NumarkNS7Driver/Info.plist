@@ -18,8 +18,6 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
-	<key>OSBundleUsageDescription</key>
-	<string>Drives the Numark NS7 DJ controller's audio interface and MIDI controls.</string>
 	<key>IOKitPersonalities</key>
 	<dict>
 		<key>NumarkNS7Device</key>
@@ -36,38 +34,29 @@
 			<string>NumarkNS7Device</string>
 			<key>IOUserServerName</key>
 			<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
-			<key>idVendor</key>
-			<integer>5604</integer>
+			<key>NS7MIDIDriverProperties</key>
+			<dict>
+				<key>CFBundleIdentifier</key>
+				<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+				<key>IOClass</key>
+				<string>IOUserService</string>
+				<key>IOUserClass</key>
+				<string>NS7MIDIDriver</string>
+				<key>IOUserMIDIDriverUserClientProperties</key>
+				<dict>
+					<key>IOClass</key>
+					<string>IOUserUserClient</string>
+					<key>IOUserClass</key>
+					<string>IOUserMIDIDriverUserClient</string>
+				</dict>
+			</dict>
 			<key>idProduct</key>
 			<integer>113</integer>
-		</dict>
-		<key>NS7MIDIDriver</key>
-		<dict>
-			<key>CFBundleIdentifier</key>
-			<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
-			<key>CFBundleIdentifierKernel</key>
-			<string>com.apple.kpi.iokit</string>
-			<key>IOClass</key>
-			<string>IOUserService</string>
-			<key>IOProviderClass</key>
-			<string>IOUserService</string>
-			<key>IOPropertyMatch</key>
-			<dict>
-				<key>IOUserClass</key>
-				<string>NumarkNS7Device</string>
-			</dict>
-			<key>IOUserClass</key>
-			<string>NS7MIDIDriver</string>
-			<key>IOUserServerName</key>
-			<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
-			<key>IOUserMIDIDriverUserClientProperties</key>
-			<dict>
-				<key>IOClass</key>
-				<string>IOUserUserClient</string>
-				<key>IOUserClass</key>
-				<string>IOUserMIDIDriverUserClient</string>
-			</dict>
+			<key>idVendor</key>
+			<integer>5604</integer>
 		</dict>
 	</dict>
+	<key>OSBundleUsageDescription</key>
+	<string>Drives the Numark NS7 DJ controller's audio interface and MIDI controls.</string>
 </dict>
 </plist>
