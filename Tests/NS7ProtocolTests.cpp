@@ -804,6 +804,33 @@ static void test_queue_ump_trailing_partial_ump_ignored()
     CHECK_EQ(f.Size(), 0u);
 }
 
+// A SysEx end with zero data bytes (kind 3, nb 0): CoreMIDI emits this when
+// the payload length is an exact multiple of 6, though our own RawMidiToUmp
+// encoder never produces it. UmpToRawMidi renders it as a bare 0xF7.
+static const uint32_t kSysExEmptyEnd[2] = { 0x30300000u, 0x00000000u };
+
+static void test_queue_ump_empty_sysex_end_closes()
+{
+    ByteFifo<64> f;
+    UmpOutState st = {};
+    uint32_t ump[4];
+    memcpy(ump,     kSysExStart,    sizeof kSysExStart);
+    memcpy(ump + 2, kSysExEmptyEnd, sizeof kSysExEmptyEnd);
+    CHECK_EQ(QueueUmpAsRawMidi(ump, 4, f, st), 0u);
+    uint8_t out[8] = {};
+    CHECK_EQ(f.Read(out, sizeof out), 8u);
+    const uint8_t expect[8] = { 0xF0, 1,2,3,4,5,6, 0xF7 };
+    CHECK(memcmp(out, expect, 8) == 0);
+}
+
+static void test_queue_ump_orphan_empty_end_dropped()
+{
+    ByteFifo<64> f;
+    UmpOutState st = {};
+    CHECK_EQ(QueueUmpAsRawMidi(kSysExEmptyEnd, 2, f, st), 1u);
+    CHECK_EQ(f.Size(), 0u);
+}
+
 static void test_next_packet_takes_at_most_39_bytes()
 {
     ByteFifo<64> f;
@@ -910,6 +937,8 @@ int main()
         T(test_queue_ump_sysex_cut_short_is_terminated),
         T(test_queue_ump_state_spans_calls),
         T(test_queue_ump_trailing_partial_ump_ignored),
+        T(test_queue_ump_empty_sysex_end_closes),
+        T(test_queue_ump_orphan_empty_end_dropped),
         T(test_next_packet_takes_at_most_39_bytes),
         T(test_next_packet_empty_fifo_returns_zero),
 #undef T

@@ -457,7 +457,10 @@ inline uint32_t QueueUmpAsRawMidi(const uint32_t * words, size_t count, ByteFifo
         }
 
         const bool isStart       = bytes[0] == 0xF0;
-        const bool isSysExPiece  = isStart || bytes[0] < 0x80;
+        const bool isEmptyEnd    = n == 1 && bytes[0] == 0xF7;   // kind 3, nb 0: CoreMIDI
+                                                                   // emits this for a SysEx
+                                                                   // whose length is a multiple of 6
+        const bool isSysExPiece  = isStart || isEmptyEnd || bytes[0] < 0x80;
         const bool isEnd         = bytes[n - 1] == 0xF7;
 
         if (!isSysExPiece) {
