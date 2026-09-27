@@ -49,7 +49,7 @@ handshake, audio packetisation, and MIDI framing, and wrote:
   the dext.
 - `NumarkNS7Driver/Sources/NS7Protocol.h` — a header-only, DriverKit-free
   protocol library (descriptor validation, packet framing, MIDI parsing),
-  covered by host unit tests in `Tests/NS7ProtocolTests.cpp`.
+  covered by host unit tests in `Tests/`.
 
 This session picked up from there: prove the protocol on hardware, then port
 it into the dext.
@@ -104,7 +104,7 @@ resized. Once fixed, the observations were:
   idle, the device doesn't send filler packets at all — it NAKs instead.
 - **Messages can split across packet boundaries.** Seen on hardware during a
   platter move and now a regression test
-  (`test_real_split_pitch_bend_reassembles` in `Tests/NS7ProtocolTests.cpp`):
+  (`test_real_split_pitch_bend_reassembles` in `Tests/MidiTests.cpp`):
 
   ```
   packet N:   B0 00 6A E0 00        (pitch bend status + 2 data bytes, then
@@ -146,7 +146,7 @@ Fix, applied to both the probe and later the dext:
 - Isochronous resync: if a request's planned start frame is no longer in the
   future, restart it `kIsoLeadFrames` (10) frames ahead of the current bus
   time instead of resubmitting a request the controller will reject
-  (`NS7::NextIsoFrame`, unit-tested in `Tests/NS7ProtocolTests.cpp`).
+  (`NS7::NextIsoFrame`, unit-tested in `Tests/DeviceProtocolTests.cpp`).
 - Stall recovery on bulk INs: `ClearStall(true)` followed by requeuing the
   same read (`RecoverBulk` in `NumarkNS7Device.cpp`, `RecoverStall` in the
   probe).
@@ -331,9 +331,10 @@ practices baked into this repo's workflow (see `docs/superpowers/`):
 
 - **Test-driven development** for every piece of pure protocol logic:
   `NS7Protocol.h`'s parsing, framing, scheduling and FIFO code all has
-  failing tests written first in `Tests/NS7ProtocolTests.cpp`, which is a
-  host-side (non-DriverKit) build runnable with `make -C Tests` under ASan
-  and UBSan.
+  failing tests written first in `Tests/`, which is a host-side
+  (non-DriverKit) build runnable with `make -C Tests` under ASan and UBSan
+  (`make -C Tests tsan` under ThreadSanitizer, `make -C Tests coverage` for
+  line/branch coverage of `NS7Protocol.h`).
 - **Subagent-driven development** for the CoreMIDI service: each plan task
   is handed to a fresh implementer subagent with no memory of the others,
   then to a separate spec-compliance reviewer, then to a separate
@@ -358,7 +359,11 @@ practices baked into this repo's workflow (see `docs/superpowers/`):
   handshake, all five pipes, stall recovery, MIDI-in parsing.
 - `Tools/ns7probe/ns7probe.mm` — the user-space bring-up tool used to prove
   the protocol on hardware before it went into the dext.
-- `Tests/NS7ProtocolTests.cpp` — host unit tests for `NS7Protocol.h`.
+- `Tests/` — host unit tests for `NS7Protocol.h`: `DeviceProtocolTests.cpp`
+  (descriptors, audio, control), `MidiTests.cpp` (MIDI framing and
+  conversion, FIFO), `PropertyTests.cpp` (seeded randomized properties),
+  `FifoConcurrencyTests.cpp` (two-thread FIFO), and
+  `MidiOutStateMachineTests.cpp`, sharing `TestHarness.h`.
 - `docs/USB_ANALYSIS.md` — the original (now superseded) USB Audio Class
   analysis.
 - `docs/superpowers/specs/2026-09-26-coremidi-service-design.md` — the

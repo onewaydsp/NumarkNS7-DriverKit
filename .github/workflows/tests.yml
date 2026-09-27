@@ -1,0 +1,39 @@
+# Host-side unit tests for NumarkNS7Driver/Sources/NS7Protocol.h (Tests/).
+# The dext itself is not built here: it needs the DriverKit signing context.
+name: tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  protocol-tests:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          clang++ --version
+
+      - name: Unit and property tests (ASan + UBSan)
+        run: make -C Tests
+
+      - name: Unit and concurrency tests (ThreadSanitizer)
+        run: make -C Tests tsan
+
+      - name: Coverage of NS7Protocol.h
+        continue-on-error: true
+        run: |
+          make -C Tests coverage | tee coverage.txt
+          {
+            echo '### NS7Protocol.h coverage'
+            echo '```'
+            grep -E '^(Filename|TOTAL)' coverage.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
