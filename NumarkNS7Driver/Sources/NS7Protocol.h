@@ -392,11 +392,26 @@ inline size_t Midi2ChannelVoiceToRaw(uint32_t w0, uint32_t w1, uint8_t out[kMaxR
     return n;
 }
 
+// True for the status bytes a system (type 1) UMP may carry: defined system
+// common and real-time messages, excluding the SysEx framing bytes F0/F7.
+inline bool IsSystemUmpStatus(uint8_t status)
+{
+    switch (status) {
+    case 0xF1: case 0xF2: case 0xF3: case 0xF6:
+    case 0xF8: case 0xFA: case 0xFB: case 0xFC: case 0xFE: case 0xFF:
+        return true;
+    default:
+        return false;
+    }
+}
+
 // Converts system (type 1), MIDI 1.0 channel voice (type 2), 7-bit SysEx
 // (type 3) and MIDI 2.0 channel voice (type 4, translated to MIDI 1.0 by
 // Midi2ChannelVoiceToRaw) UMPs to raw bytes, calling `cb` once per message
-// with its whole rendering. Other message types, and type-4 messages with no
-// MIDI 1.0 form, are skipped by length.
+// with its whole rendering. Other message types, type-4 messages with no
+// MIDI 1.0 form, and type 1/2 messages whose status byte is not valid for
+// their type, are skipped by length. Data bytes are masked to 7 bits so a
+// malformed UMP can never put a status byte on the wire.
 inline void UmpToRawMidi(const uint32_t * w, size_t count, BytesCallback cb, void * ctx)
 {
     static const uint8_t kWords[16] = { 1,1,1,2,2,4,1,1,2,2,2,3,3,4,4,4 };
@@ -409,12 +424,16 @@ inline void UmpToRawMidi(const uint32_t * w, size_t count, BytesCallback cb, voi
         uint8_t out[kMaxRawBytesPerUmp];
         size_t  n = 0;
         if (type == 0x1 || type == 0x2) {
-            out[n++] = status;
-            uint8_t data;
-            if (type == 0x2) data = ((status & 0xE0) == 0xC0) ? 1 : 2;
-            else             data = (status == 0xF2) ? 2 : (status == 0xF1 || status == 0xF3) ? 1 : 0;
-            if (data > 0) out[n++] = d0;
-            if (data > 1) out[n++] = d1;
+            const bool valid = type == 0x2 ? (status >= 0x80 && status <= 0xEF)
+                                           : IsSystemUmpStatus(status);
+            if (valid) {
+                out[n++] = status;
+                uint8_t data;
+                if (type == 0x2) data = ((status & 0xE0) == 0xC0) ? 1 : 2;
+                else             data = (status == 0xF2) ? 2 : (status == 0xF1 || status == 0xF3) ? 1 : 0;
+                if (data > 0) out[n++] = d0 & 0x7F;
+                if (data > 1) out[n++] = d1 & 0x7F;
+            }
         } else if (type == 0x3) {
             const uint8_t kind = (w0 >> 20) & 0xF;
             uint8_t nb = (w0 >> 16) & 0xF;
@@ -499,6 +518,22 @@ struct UmpOutState {
     bool pendingF7;     // a SysEx was cut short; F7 must be queued before the next message, once there is room
 };
 
+// Writes one message's bytes, all or nothing, preceded by F7 if a SysEx is
+// still open: any non-real-time message, including a new SysEx start, must
+// close it first. Returns false, writing nothing, if they don't fit. The
+// caller updates sysExOpen/pendingF7.
+template <uint32_t N>
+inline bool WriteClosingOpenSysEx(ByteFifo<N> & fifo, const UmpOutState & st,
+                                  const uint8_t * bytes, size_t n)
+{
+    if (!st.sysExOpen) return fifo.Write(bytes, uint32_t(n));
+    uint8_t withTerminator[1 + kMaxRawBytesPerUmp];
+    if (n > kMaxRawBytesPerUmp) return false;   // cannot happen: UmpToRawMidi's limit
+    withTerminator[0] = 0xF7;
+    memcpy(withTerminator + 1, bytes, n);
+    return fifo.Write(withTerminator, uint32_t(n + 1));
+}
+
 // Converts UMP messages to raw MIDI 1.0 bytes and queues each message whole.
 // Types 1, 2 and 3 pass through; MIDI 2.0 channel voice (type 4) is
 // translated to MIDI 1.0 first; other types are skipped. Returns how many UMP packets were
@@ -506,9 +541,9 @@ struct UmpOutState {
 // whole message); a trailing partial UMP (too few words for its type) is
 // ignored and not counted. Dropping a SysEx start drops the rest of that
 // SysEx too, so no orphan data bytes reach the device; a SysEx cut short
-// part-way through, or interrupted by another message, is terminated with
-// F7 as soon as room allows, so the device is never left waiting inside a
-// SysEx. Real-time bytes (0xF8-0xFF) pass through a SysEx untouched. Real-
+// part-way through, or interrupted by another message (including a new
+// SysEx start), is terminated with F7 as soon as room allows, so the device
+// is never left waiting inside a SysEx. Real-time bytes (0xF8-0xFF) pass through a SysEx untouched. Real-
 // time safe: no locks, no allocation.
 template <uint32_t N>
 inline uint32_t QueueUmpAsRawMidi(const uint32_t * words, size_t count, ByteFifo<N> & fifo,
@@ -538,12 +573,9 @@ inline uint32_t QueueUmpAsRawMidi(const uint32_t * words, size_t count, ByteFifo
             // with an open SysEx must close it first; real-time bytes
             // (0xF8-0xFF) pass through without disturbing sysExOpen.
             if (st.sysExOpen && bytes[0] < 0xF8) {
-                uint8_t withTerminator[1 + kMaxRawBytesPerUmp];
-                if (n > kMaxRawBytesPerUmp) { x->dropped++; return; }
-                withTerminator[0] = 0xF7;
-                memcpy(withTerminator + 1, bytes, n);
+                const bool ok = WriteClosingOpenSysEx(*x->fifo, st, bytes, n);
                 st.sysExOpen = false;
-                if (!x->fifo->Write(withTerminator, uint32_t(n + 1))) {
+                if (!ok) {
                     x->dropped++;
                     st.pendingF7 = true;
                 }
@@ -554,7 +586,7 @@ inline uint32_t QueueUmpAsRawMidi(const uint32_t * words, size_t count, ByteFifo
         }
 
         if (isStart) {
-            if (x->fifo->Write(bytes, uint32_t(n))) {
+            if (WriteClosingOpenSysEx(*x->fifo, st, bytes, n)) {
                 st.sysExOpen = !isEnd;
             } else {
                 x->dropped++;
