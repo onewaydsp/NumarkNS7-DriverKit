@@ -32,6 +32,10 @@ public:
     // Fills one 42-byte EP 0x04 packet from pending CoreMIDI output.
     // Returns the number of MIDI bytes packed; 0 means nothing to send.
     uint32_t NextMidiOutPacket(uint8_t * packet) LOCALONLY;
+
+    // Returns the number of CoreMIDI output messages dropped because the FIFO
+    // was full since the last call, and resets it.
+    uint32_t TakeMidiOutDropped() LOCALONLY;
 };
 
 #endif /* NS7MIDIDriver_h */

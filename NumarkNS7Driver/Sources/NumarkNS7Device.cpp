@@ -58,6 +58,7 @@ constexpr uint32_t kLoggedErrorsPerPipe = 5;
 constexpr uint32_t kLoggedMidiPerStats  = 100;                // MIDI lines per stats period
 constexpr uint32_t kMidiOutTimeoutMs    = 1000;
 constexpr uint32_t kMidiOutStallRetries = 3;
+constexpr uint32_t kMidiOutStallBackoffTicks = 250;           // FeedbackComplete ticks, ~1 s
 
 struct SlotRef { uint32_t index; };
 
@@ -96,6 +97,7 @@ struct NumarkNS7Device_IVars
     BulkSlot midiOut = {};
     uint32_t midiOutLength = 0;     // MIDI bytes in the packet in flight; 0 = idle
     uint32_t midiOutRetries = 0;    // resends of the current packet after a STALL
+    uint32_t midiOutBackoffTicks = 0;   // FeedbackComplete ticks to wait before sending again
 
     uint64_t playbackFrame = 0;     // next frame for a playback request
     uint64_t feedbackFrame = 0;
@@ -111,6 +113,8 @@ struct NumarkNS7Device_IVars
     uint64_t  captureBytes = 0;
     uint64_t  midiMessages = 0;
     uint64_t  midiOutBytes = 0;
+    uint64_t  midiOutLost = 0;      // packets dropped after exhausting STALL retries
+    uint64_t  midiOutDropped = 0;   // messages CoreMIDI queued that did not fit the FIFO
     uint32_t  midiLogged = 0;       // reset with each stats line
     IOLock        * midiClientLock = nullptr;
     NS7MIDIDriver * midiClient = nullptr;       // guarded by midiClientLock, retained
@@ -406,24 +410,6 @@ RecoverBulk(NumarkNS7Device_IVars * iv, int pipe, BulkSlot & slot, uint32_t leng
     SubmitBulk(iv, pipe, slot, length);
 }
 
-static void
-LogStats(NumarkNS7Device_IVars * iv)
-{
-    const PipeStats & p = iv->stats[kPipePlayback], & f = iv->stats[kPipeFeedback],
-                    & c = iv->stats[kPipeCapture],  & m = iv->stats[kPipeMidiIn];
-    const PipeStats & o = iv->stats[kPipeMidiOut];
-    Log("stats: playback %llu (%llu err, %llu resync) | feedback %llu pkts, %d frames/ms "
-        "(%llu err, %llu resync) | capture %llu B (%llu err, %llu stall) | "
-        "MIDI in %llu xfers, %llu msgs (%llu err, %llu stall) | "
-        "MIDI out %llu pkts, %llu B (%llu err, %llu stall)",
-        p.done, p.errors, p.resyncs, iv->feedbackPackets, iv->feedbackFrames, f.errors, f.resyncs,
-        iv->captureBytes, c.errors, c.stalls, m.done, iv->midiMessages, m.errors, m.stalls,
-        o.done, iv->midiOutBytes, o.errors, o.stalls);
-    if (iv->midiLogged > kLoggedMidiPerStats)
-        Log("%u MIDI messages not logged", iv->midiLogged - kLoggedMidiPerStats);
-    iv->midiLogged = 0;
-}
-
 // ── MIDI client ──────────────────────────────────────────────────────────────
 
 // Retained copy of the registered MIDI client, or nullptr.
@@ -437,6 +423,54 @@ CopyMidiClient(NumarkNS7Device_IVars * iv)
     return client;
 }
 
+// Runs on the USB queue.
+static void
+LogStats(NumarkNS7Device_IVars * iv)
+{
+    if (NS7MIDIDriver * client = CopyMidiClient(iv)) {
+        iv->midiOutDropped += client->TakeMidiOutDropped();
+        client->release();
+    }
+    const PipeStats & p = iv->stats[kPipePlayback], & f = iv->stats[kPipeFeedback],
+                    & c = iv->stats[kPipeCapture],  & m = iv->stats[kPipeMidiIn];
+    const PipeStats & o = iv->stats[kPipeMidiOut];
+    Log("stats: playback %llu (%llu err, %llu resync) | feedback %llu pkts, %d frames/ms "
+        "(%llu err, %llu resync) | capture %llu B (%llu err, %llu stall) | "
+        "MIDI in %llu xfers, %llu msgs (%llu err, %llu stall) | "
+        "MIDI out %llu pkts, %llu B (%llu err, %llu stall, %llu pkts lost, %llu msgs dropped)",
+        p.done, p.errors, p.resyncs, iv->feedbackPackets, iv->feedbackFrames, f.errors, f.resyncs,
+        iv->captureBytes, c.errors, c.stalls, m.done, iv->midiMessages, m.errors, m.stalls,
+        o.done, iv->midiOutBytes, o.errors, o.stalls, iv->midiOutLost, iv->midiOutDropped);
+    if (iv->midiLogged > kLoggedMidiPerStats)
+        Log("%u MIDI messages not logged", iv->midiLogged - kLoggedMidiPerStats);
+    iv->midiLogged = 0;
+}
+
+// Clears a STALL on EP 0x04. Returns true if the pipe can be used again.
+static bool
+ClearMidiOutStall(NumarkNS7Device_IVars * iv)
+{
+    iv->stats[kPipeMidiOut].stalls++;
+    const kern_return_t ret = iv->pipes[kPipeMidiOut]->ClearStall(true);
+    if (ret != kIOReturnSuccess) {
+        Log("EP 0x%02x ClearStall failed: 0x%08x", kEndpoints[kPipeMidiOut], ret);
+        return false;
+    }
+    return true;
+}
+
+// Drops the packet in flight after its STALL retries ran out, and pauses
+// MIDI out so a pipe that keeps stalling cannot crowd the feedback chain.
+static void
+GiveUpMidiOutPacket(NumarkNS7Device_IVars * iv)
+{
+    iv->midiOutLost++;
+    iv->midiOutLength = 0;
+    if (iv->midiOutBackoffTicks == 0)
+        Log("EP 0x%02x keeps stalling: MIDI out paused for ~1 s", kEndpoints[kPipeMidiOut]);
+    iv->midiOutBackoffTicks = kMidiOutStallBackoffTicks;
+}
+
 static void
 SendMidiOut(NumarkNS7Device_IVars * iv)
 {
@@ -444,17 +478,20 @@ SendMidiOut(NumarkNS7Device_IVars * iv)
                                                         iv->midiOut.action, kMidiOutTimeoutMs);
     if (ret != kIOReturnSuccess) {
         NoteError(iv, kPipeMidiOut, ret);
+        if (ret == kUSBHostReturnPipeStalled) ClearMidiOutStall(iv);
         iv->midiOutLength = 0;
     }
 }
 
 // Starts the next EP 0x04 transfer if none is in flight and CoreMIDI has
 // queued bytes. Runs on the USB queue: from FeedbackComplete (~every 4 ms)
-// and from MidiOutComplete (back to back while data remains).
+// and from MidiOutComplete (back to back while data remains). Sends nothing
+// while a stall backoff is running; FeedbackComplete counts it down.
 static void
 PumpMidiOut(NumarkNS7Device_IVars * iv)
 {
     if (iv->stopping || iv->midiOutLength != 0 || iv->midiOut.action == nullptr) return;
+    if (iv->midiOutBackoffTicks > 0) return;
     NS7MIDIDriver * client = CopyMidiClient(iv);
     if (client == nullptr) return;
     const uint32_t n = client->NextMidiOutPacket(iv->midiOut.ptr);
@@ -532,7 +569,7 @@ StartStreaming(NumarkNS7Device * self, NumarkNS7Device_IVars * iv)
         return ret;
     }
 
-    Log("streaming: %u playback, %u feedback, %u capture, %u MIDI requests in flight",
+    Log("streaming: %u playback, %u feedback, %u capture, %u MIDI in + 1 MIDI out requests in flight",
         kPlaybackInFlight, kFeedbackInFlight, kCaptureInFlight, kMidiInFlight);
     return kIOReturnSuccess;
 }
@@ -565,6 +602,7 @@ IMPL(NumarkNS7Device, FeedbackComplete)
         if (++iv->feedbackPackets % kStatsEveryFeedback == 0) LogStats(iv);
     }
     SubmitFeedback(iv, SlotIndex(action));
+    if (iv->midiOutBackoffTicks > 0) iv->midiOutBackoffTicks--;
     PumpMidiOut(iv);
 }
 
@@ -624,14 +662,16 @@ IMPL(NumarkNS7Device, MidiOutComplete)
     (void)completionTimestamp;
     if (iv->stopping) return;
 
-    if (status == kUSBHostReturnPipeStalled && iv->midiOutRetries < kMidiOutStallRetries) {
+    if (status == kUSBHostReturnPipeStalled) {
+        // Always clear the stall so the pipe stays usable; resend the same
+        // packet only while retries remain.
         NoteError(iv, kPipeMidiOut, status);
-        iv->stats[kPipeMidiOut].stalls++;
-        iv->midiOutRetries++;
-        if (iv->pipes[kPipeMidiOut]->ClearStall(true) == kIOReturnSuccess) {
-            SendMidiOut(iv);   // resend the same packet
+        if (ClearMidiOutStall(iv) && iv->midiOutRetries < kMidiOutStallRetries) {
+            iv->midiOutRetries++;
+            SendMidiOut(iv);
             return;
         }
+        GiveUpMidiOutPacket(iv);
     } else if (!TransferOk(status)) {
         NoteError(iv, kPipeMidiOut, status);
     } else {

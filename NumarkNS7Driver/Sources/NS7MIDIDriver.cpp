@@ -145,8 +145,10 @@ CreateMidiObjects(NS7MIDIDriver * self, NS7MIDIDriver_IVars * iv)
     }
 
     // CoreMIDI real-time thread: no locks, no allocation, no logging.
-    // Stop sets `detached` before removing the device, so a late call from
-    // CoreMIDI no longer touches the FIFO.
+    // Best effort: once Stop sets `detached`, new calls leave the FIFO alone.
+    // A call already past the check may still write, which is harmless since
+    // ivars and the FIFO stay valid until free(). Nothing here protects
+    // against a call after free().
     ret = iv->destination->SetIOBlock(^kern_return_t(const IOUserMIDIUMPWord * words, size_t numWords) {
         if (__atomic_load_n(&iv->detached, __ATOMIC_ACQUIRE)) return kIOReturnSuccess;
         const uint32_t dropped = NS7::QueueUmpAsRawMidi(words, numWords, iv->midiOut, iv->midiOutState);
@@ -210,7 +212,9 @@ IMPL(NS7MIDIDriver, Stop)
         ivars->provider->SyncUsbQueue();
     }
     // SetIOBlock(nullptr) is not documented as allowed, so the IO block is
-    // detached with a flag instead.
+    // detached with a flag instead. Best effort: it stops new FIFO writes, but
+    // a block already past the check may still write (harmless: ivars and the
+    // FIFO stay valid until free()); it cannot guard a call after free().
     __atomic_store_n(&ivars->detached, true, __ATOMIC_RELEASE);
     if (ivars->deviceAdded) {
         const kern_return_t ret = RemoveObject(ivars->device);
@@ -253,7 +257,11 @@ NS7MIDIDriver::DeliverMidiIn(const uint32_t * words, uint32_t count)
 uint32_t
 NS7MIDIDriver::NextMidiOutPacket(uint8_t * packet)
 {
-    const uint32_t dropped = __atomic_exchange_n(&ivars->midiOutDropped, 0, __ATOMIC_RELAXED);
-    if (dropped) Log("dropped %u MIDI out messages (FIFO full)", dropped);
     return NS7::NextMidiOutPacket(ivars->midiOut, packet);
+}
+
+uint32_t
+NS7MIDIDriver::TakeMidiOutDropped()
+{
+    return __atomic_exchange_n(&ivars->midiOutDropped, 0, __ATOMIC_RELAXED);
 }
