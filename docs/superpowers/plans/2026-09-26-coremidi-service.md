@@ -592,6 +592,9 @@ IMPL(NS7MIDIDriver, Stop)
 kern_return_t
 NS7MIDIDriver::StartIO(OSArray * deviceList)
 {
+    // No destination IO block runs while I/O is stopped, so this is the safe
+    // point to forget a SysEx left open by a previous session.
+    ivars->midiOutState = {};
     const kern_return_t ret = super::StartIO(deviceList);
     if (ret == kIOReturnSuccess) __atomic_store_n(&ivars->running, true, __ATOMIC_RELEASE);
     Log("StartIO: 0x%08x", ret);
