@@ -57,8 +57,10 @@ constexpr uint64_t kStatsEveryFeedback  = 10000;              // ~10 s
 constexpr uint32_t kLoggedErrorsPerPipe = 5;
 constexpr uint32_t kLoggedMidiPerStats  = 100;                // MIDI lines per stats period
 constexpr uint32_t kMidiOutTimeoutMs    = 1000;
-constexpr uint32_t kMidiOutStallRetries = 3;
-constexpr uint32_t kMidiOutStallBackoffTicks = 250;           // FeedbackComplete ticks, ~1 s
+// STALL retries and backoff: NS7::kMidiOutStallRetries, NS7::kMidiOutStallBackoffTicks.
+
+typedef NS7::MidiOutStateMachine::Action MidiOutAction;
+typedef NS7::MidiOutStateMachine::Result MidiOutResult;
 
 struct SlotRef { uint32_t index; };
 
@@ -95,10 +97,7 @@ struct NumarkNS7Device_IVars
     BulkSlot capture[kCaptureInFlight] = {};
     BulkSlot midiIn[kMidiInFlight] = {};
     BulkSlot midiOut = {};
-    uint32_t midiOutLength = 0;     // MIDI bytes in the packet in flight; 0 = idle
-    uint32_t midiOutRetries = 0;    // resends of the current packet after a STALL
-    uint32_t midiOutBackoffTicks = 0;   // FeedbackComplete ticks to wait before sending again
-    bool     midiOutPauseLogged = false; // pause logged this stats period
+    NS7::MidiOutStateMachine midiOutState;   // in-flight packet, STALL retries, backoff, counters
 
     uint64_t playbackFrame = 0;     // next frame for a playback request
     uint64_t feedbackFrame = 0;
@@ -113,8 +112,6 @@ struct NumarkNS7Device_IVars
     uint64_t  feedbackPackets = 0;
     uint64_t  captureBytes = 0;
     uint64_t  midiMessages = 0;
-    uint64_t  midiOutBytes = 0;
-    uint64_t  midiOutLost = 0;      // packets dropped after exhausting STALL retries
     uint64_t  midiOutDropped = 0;   // messages CoreMIDI queued that did not fit the FIFO
     uint64_t  midiOutPumpClient = 0;    // PumpMidiOut calls that found a MIDI client
     uint64_t  midiOutPumpBytes = 0;     // ... and got bytes to send
@@ -451,13 +448,14 @@ LogStats(NumarkNS7Device_IVars * iv)
         iv->captureBytes, c.errors, c.stalls, m.done, iv->midiMessages, m.errors, m.stalls);
     Log("MIDI out: %llu pkt %llu B %llu err %llu st %llu lost %llu drop | blk %u call %u w "
         "%u B last %08x | pump %llu cl %llu data | len %u bo %u reg %d",
-        o.done, iv->midiOutBytes, o.errors, o.stalls, iv->midiOutLost, iv->midiOutDropped,
+        iv->midiOutState.PacketsSent(), iv->midiOutState.BytesSent(), o.errors, o.stalls,
+        iv->midiOutState.PacketsLost(), iv->midiOutDropped,
         blkCalls, blkWords, blkBytes, blkLast, iv->midiOutPumpClient, iv->midiOutPumpBytes,
-        iv->midiOutLength, iv->midiOutBackoffTicks, haveClient ? 1 : 0);
+        iv->midiOutState.InFlightBytes(), iv->midiOutState.BackoffTicks(), haveClient ? 1 : 0);
     if (iv->midiLogged > kLoggedMidiPerStats)
         Log("%u MIDI messages not logged", iv->midiLogged - kLoggedMidiPerStats);
     iv->midiLogged = 0;
-    iv->midiOutPauseLogged = false;
+    iv->midiOutState.OnStatsLogged();
 }
 
 // Clears a STALL on EP 0x04. Returns true if the pipe can be used again.
@@ -473,34 +471,44 @@ ClearMidiOutStall(NumarkNS7Device_IVars * iv)
     return true;
 }
 
-// Drops the current packet after a STALL it can't get past (retries ran out,
-// or AsyncIO itself reported the stall), and pauses
-// MIDI out so a pipe that keeps stalling cannot crowd the feedback chain.
+// After the state machine gave up on a packet (a STALL it couldn't get
+// past) and paused MIDI out so a pipe that keeps stalling cannot crowd the
+// feedback chain: logs that once per stats period.
 static void
-GiveUpMidiOutPacket(NumarkNS7Device_IVars * iv)
+LogMidiOutPause(NumarkNS7Device_IVars * iv)
 {
-    iv->midiOutLost++;
-    iv->midiOutLength = 0;
-    if (!iv->midiOutPauseLogged) {
-        iv->midiOutPauseLogged = true;
+    if (iv->midiOutState.TakePauseLog())
         Log("EP 0x%02x keeps stalling: MIDI out paused for ~1 s", kEndpoints[kPipeMidiOut]);
-    }
-    iv->midiOutBackoffTicks = kMidiOutStallBackoffTicks;
 }
 
+// Classifies the return of AsyncIO (submission).
+static MidiOutResult
+MidiOutSubmitResult(kern_return_t ret)
+{
+    if (ret == kIOReturnSuccess)          return MidiOutResult::Ok;
+    if (ret == kUSBHostReturnPipeStalled) return MidiOutResult::Stalled;
+    return MidiOutResult::Error;
+}
+
+// Classifies a completion status.
+static MidiOutResult
+MidiOutCompletionResult(IOReturn status)
+{
+    if (status == kUSBHostReturnPipeStalled) return MidiOutResult::Stalled;
+    return TransferOk(status) ? MidiOutResult::Ok : MidiOutResult::Error;
+}
+
+// Submits the packet in iv->midiOut. On failure the state machine drops it;
+// the next FeedbackComplete pumps again.
 static void
 SendMidiOut(NumarkNS7Device_IVars * iv)
 {
     kern_return_t ret = iv->pipes[kPipeMidiOut]->AsyncIO(iv->midiOut.buffer, NS7::kMidiPacketBytes,
                                                         iv->midiOut.action, kMidiOutTimeoutMs);
-    if (ret != kIOReturnSuccess) {
-        NoteError(iv, kPipeMidiOut, ret);
-        if (ret == kUSBHostReturnPipeStalled) {
-            ClearMidiOutStall(iv);
-            GiveUpMidiOutPacket(iv);   // counts it lost, starts the backoff, zeroes the length
-        } else {
-            iv->midiOutLength = 0;
-        }
+    if (ret != kIOReturnSuccess) NoteError(iv, kPipeMidiOut, ret);
+    if (iv->midiOutState.OnSendResult(MidiOutSubmitResult(ret)) == MidiOutAction::ClearStallThenDrop) {
+        ClearMidiOutStall(iv);
+        LogMidiOutPause(iv);
     }
 }
 
@@ -511,8 +519,7 @@ SendMidiOut(NumarkNS7Device_IVars * iv)
 static void
 PumpMidiOut(NumarkNS7Device_IVars * iv)
 {
-    if (iv->stopping || iv->midiOutLength != 0 || iv->midiOut.action == nullptr) return;
-    if (iv->midiOutBackoffTicks > 0) return;
+    if (iv->stopping || iv->midiOut.action == nullptr || !iv->midiOutState.CanStart()) return;
     NS7MIDIDriver * client = CopyMidiClient(iv);
     if (client == nullptr) return;
     iv->midiOutPumpClient++;
@@ -520,9 +527,7 @@ PumpMidiOut(NumarkNS7Device_IVars * iv)
     client->release();
     if (n == 0) return;
     iv->midiOutPumpBytes++;
-    iv->midiOutLength = n;
-    iv->midiOutRetries = 0;
-    SendMidiOut(iv);
+    if (iv->midiOutState.OnPacketReady(n) == MidiOutAction::Send) SendMidiOut(iv);
 }
 
 // Called by the raw MIDI parser for each complete UMP.
@@ -625,7 +630,7 @@ IMPL(NumarkNS7Device, FeedbackComplete)
         if (++iv->feedbackPackets % kStatsEveryFeedback == 0) LogStats(iv);
     }
     SubmitFeedback(iv, SlotIndex(action));
-    if (iv->midiOutBackoffTicks > 0) iv->midiOutBackoffTicks--;
+    iv->midiOutState.OnTick();
     PumpMidiOut(iv);
 }
 
@@ -685,23 +690,22 @@ IMPL(NumarkNS7Device, MidiOutComplete)
     (void)completionTimestamp;
     if (iv->stopping) return;
 
-    if (status == kUSBHostReturnPipeStalled) {
-        // Always clear the stall so the pipe stays usable; resend the same
-        // packet only while retries remain.
-        NoteError(iv, kPipeMidiOut, status);
-        if (ClearMidiOutStall(iv) && iv->midiOutRetries < kMidiOutStallRetries) {
-            iv->midiOutRetries++;
-            SendMidiOut(iv);
-            return;
-        }
-        GiveUpMidiOutPacket(iv);
-    } else if (!TransferOk(status)) {
-        NoteError(iv, kPipeMidiOut, status);
-    } else {
-        iv->stats[kPipeMidiOut].done++;
-        iv->midiOutBytes += iv->midiOutLength;
+    const MidiOutResult result = MidiOutCompletionResult(status);
+    if (result != MidiOutResult::Ok) NoteError(iv, kPipeMidiOut, status);
+    MidiOutAction next = iv->midiOutState.OnComplete(result);
+    // Always clear a STALL so the pipe stays usable; the state machine
+    // resends the same packet only while retries remain.
+    if (next == MidiOutAction::ClearStall) next = iv->midiOutState.OnStallCleared(ClearMidiOutStall(iv));
+    switch (next) {
+    case MidiOutAction::Send:
+        SendMidiOut(iv);
+        return;
+    case MidiOutAction::StartBackoff:
+        LogMidiOutPause(iv);
+        break;
+    default:   // Pump
+        break;
     }
-    iv->midiOutLength = 0;
     PumpMidiOut(iv);
 }
 
@@ -836,6 +840,7 @@ kern_return_t
 IMPL(NumarkNS7Device, Stop)
 {
     ivars->stopping = true;
+    ivars->midiOutState.OnStop();
     SetMidiClient(nullptr);
     if (ivars->playback[0].action) LogStats(ivars);
 

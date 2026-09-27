@@ -628,6 +628,135 @@ inline uint32_t NextMidiOutPacket(ByteFifo<N> & fifo, uint8_t pkt[kMidiPacketByt
     return BuildMidiOutPacket(bytes, n, pkt);
 }
 
+// ── MIDI out transfer state (EP 0x04) ────────────────────────────────────────
+
+constexpr uint32_t kMidiOutStallRetries      = 3;     // resends of one packet after a STALL
+constexpr uint32_t kMidiOutStallBackoffTicks = 250;   // feedback ticks (~1 s) paused after giving up
+
+// Decides what the driver does with EP 0x04, one packet in flight at a time.
+// The driver performs the I/O and logging and reports back; this keeps the
+// in-flight length, STALL retries, backoff and counters. Sequence:
+//
+//   CanStart()? -> fill a packet -> OnPacketReady(n) -> Send
+//   Send: submit, then OnSendResult(result of the submit call):
+//     Ok -> Idle (in flight)          Error -> Idle (dropped; next tick pumps)
+//     Stalled -> ClearStallThenDrop (clear the STALL; packet lost, back off)
+//   Completion: OnComplete(result of the transfer):
+//     Ok -> Pump (counted sent)       Error (incl. timeout) -> Pump (dropped)
+//     Stalled -> ClearStall; clear it, then OnStallCleared(cleared):
+//       cleared and retries left -> Send (the same packet again)
+//       otherwise -> StartBackoff (packet lost, back off; then pump, a no-op)
+//   Every feedback tick: OnTick(), then try to start.
+//
+// After ClearStallThenDrop or StartBackoff, TakePauseLog() says whether to log
+// that MIDI out paused (once per stats period; OnStatsLogged() starts a new
+// period). The caller notes every non-Ok result as an error itself. After
+// OnStop(), completions are ignored and nothing starts. Value-initialize it
+// (`= {}`) or zero-fill it (the dext allocates it with IONewZero). Not thread
+// safe: the dext drives it from the USB completion queue only.
+class MidiOutStateMachine {
+public:
+    enum class Result : uint8_t { Ok, Stalled, Error };
+
+    enum class Action : uint8_t {
+        Idle,                 // nothing to do now
+        Send,                 // submit the packet in the buffer; report with OnSendResult
+        ClearStall,           // clear the pipe's STALL; report with OnStallCleared
+        ClearStallThenDrop,   // clear the STALL (result unused); packet already dropped as lost
+        StartBackoff,         // packet dropped as lost and MIDI out paused; then pump
+        Pump,                 // the pipe is free: try to start the next packet
+    };
+
+    // True when a new packet may be filled and sent.
+    bool CanStart() const { return !mStopping && mLength == 0 && mBackoffTicks == 0; }
+
+    // A packet of `bytes` MIDI bytes is in the buffer (0: the FIFO was empty).
+    Action OnPacketReady(uint32_t bytes)
+    {
+        if (bytes == 0) return Action::Idle;
+        mLength  = bytes;
+        mRetries = 0;
+        return Action::Send;
+    }
+
+    // Result of submitting the packet (the AsyncIO call itself).
+    Action OnSendResult(Result r)
+    {
+        if (r == Result::Ok) return Action::Idle;
+        if (r == Result::Stalled) {
+            GiveUp();
+            return Action::ClearStallThenDrop;
+        }
+        mLength = 0;
+        return Action::Idle;
+    }
+
+    // Result of the transfer, from its completion.
+    Action OnComplete(Result r)
+    {
+        if (mStopping) return Action::Idle;
+        if (r == Result::Stalled) return Action::ClearStall;
+        if (r == Result::Ok) {
+            mPacketsSent++;
+            mBytesSent += mLength;
+        }
+        mLength = 0;
+        return Action::Pump;
+    }
+
+    // After Action::ClearStall: whether ClearStall succeeded.
+    Action OnStallCleared(bool cleared)
+    {
+        if (cleared && mRetries < kMidiOutStallRetries) {
+            mRetries++;
+            return Action::Send;
+        }
+        GiveUp();
+        return Action::StartBackoff;
+    }
+
+    void OnTick()        { if (mBackoffTicks > 0) mBackoffTicks--; }
+    void OnStatsLogged() { mPauseLogged = false; }
+    void OnStop()        { mStopping = true; }
+
+    // True once after a give-up that should be logged this stats period.
+    bool TakePauseLog()
+    {
+        const bool log = mPauseLogPending;
+        mPauseLogPending = false;
+        return log;
+    }
+
+    uint32_t InFlightBytes() const { return mLength; }
+    uint32_t Retries()       const { return mRetries; }
+    uint32_t BackoffTicks()  const { return mBackoffTicks; }
+    uint64_t PacketsSent()   const { return mPacketsSent; }
+    uint64_t BytesSent()     const { return mBytesSent; }
+    uint64_t PacketsLost()   const { return mPacketsLost; }   // dropped after a STALL it couldn't get past
+
+private:
+    void GiveUp()
+    {
+        mPacketsLost++;
+        mLength = 0;
+        if (!mPauseLogged) {
+            mPauseLogged     = true;
+            mPauseLogPending = true;
+        }
+        mBackoffTicks = kMidiOutStallBackoffTicks;
+    }
+
+    uint32_t mLength;           // MIDI bytes in the packet in flight; 0 = idle
+    uint32_t mRetries;          // resends of the current packet after a STALL
+    uint32_t mBackoffTicks;     // ticks to wait before sending again
+    bool     mPauseLogged;      // pause logged this stats period
+    bool     mPauseLogPending;  // ... and the driver has yet to log it
+    bool     mStopping;
+    uint64_t mPacketsSent;
+    uint64_t mBytesSent;
+    uint64_t mPacketsLost;
+};
+
 // ── Ring buffer copies ───────────────────────────────────────────────────────
 
 inline void RingWrite(uint8_t * ring, uint32_t ringFrames, uint32_t frameBytes,
