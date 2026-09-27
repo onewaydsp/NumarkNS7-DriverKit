@@ -9,6 +9,8 @@
 /* Begin PBXBuildFile section */
 		AA0000000000000000000101 /* NumarkNS7Device.iig in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000001 /* NumarkNS7Device.iig */; };
 		AA0000000000000000000102 /* NumarkNS7Device.cpp in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000002 /* NumarkNS7Device.cpp */; };
+		AA0000000000000000000111 /* NS7MIDIDriver.iig in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000011 /* NS7MIDIDriver.iig */; };
+		AA0000000000000000000112 /* NS7MIDIDriver.cpp in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000012 /* NS7MIDIDriver.cpp */; };
 		AA0000000000000000000106 /* NumarkNS7InstallerApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000006 /* NumarkNS7InstallerApp.swift */; };
 		AA0000000000000000000105 /* com.andrewabner.ns7.driverkit.dext in Embed System Extensions */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000005 /* com.andrewabner.ns7.driverkit.dext */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
@@ -40,6 +42,8 @@
 /* Begin PBXFileReference section */
 		AA0000000000000000000001 /* NumarkNS7Device.iig */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.iig; path = NumarkNS7Device.iig; sourceTree = "<group>"; };
 		AA0000000000000000000002 /* NumarkNS7Device.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = NumarkNS7Device.cpp; sourceTree = "<group>"; };
+		AA0000000000000000000011 /* NS7MIDIDriver.iig */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.iig; path = NS7MIDIDriver.iig; sourceTree = "<group>"; };
+		AA0000000000000000000012 /* NS7MIDIDriver.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = NS7MIDIDriver.cpp; sourceTree = "<group>"; };
 		AA0000000000000000000003 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		AA0000000000000000000004 /* NumarkNS7Driver.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = NumarkNS7Driver.entitlements; sourceTree = "<group>"; };
 		AA0000000000000000000005 /* com.andrewabner.ns7.driverkit.dext */ = {isa = PBXFileReference; explicitFileType = "wrapper.driver-extension"; includeInIndex = 0; path = com.andrewabner.ns7.driverkit.dext; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -90,6 +94,8 @@
 			children = (
 				AA0000000000000000000001 /* NumarkNS7Device.iig */,
 				AA0000000000000000000002 /* NumarkNS7Device.cpp */,
+				AA0000000000000000000011 /* NS7MIDIDriver.iig */,
+				AA0000000000000000000012 /* NS7MIDIDriver.cpp */,
 			);
 			path = Sources;
 			sourceTree = "<group>";
@@ -184,6 +190,8 @@
 			files = (
 				AA0000000000000000000101 /* NumarkNS7Device.iig in Sources */,
 				AA0000000000000000000102 /* NumarkNS7Device.cpp in Sources */,
+				AA0000000000000000000111 /* NS7MIDIDriver.iig in Sources */,
+				AA0000000000000000000112 /* NS7MIDIDriver.cpp in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -253,13 +261,15 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = NumarkNS7Driver/NumarkNS7Driver.entitlements;
-				DRIVERKIT_DEPLOYMENT_TARGET = 21.0;
+				DRIVERKIT_DEPLOYMENT_TARGET = 25.0;
 				INFOPLIST_FILE = NumarkNS7Driver/Info.plist;
 				OTHER_LDFLAGS = (
 					"-framework",
 					DriverKit,
 					"-framework",
 					USBDriverKit,
+					"-framework",
+					MIDIDriverKit,
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.andrewabner.ns7.driverkit;
 				PRODUCT_NAME = "$(PRODUCT_BUNDLE_IDENTIFIER)";
@@ -272,13 +282,15 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = NumarkNS7Driver/NumarkNS7Driver.entitlements;
-				DRIVERKIT_DEPLOYMENT_TARGET = 21.0;
+				DRIVERKIT_DEPLOYMENT_TARGET = 25.0;
 				INFOPLIST_FILE = NumarkNS7Driver/Info.plist;
 				OTHER_LDFLAGS = (
 					"-framework",
 					DriverKit,
 					"-framework",
 					USBDriverKit,
+					"-framework",
+					MIDIDriverKit,
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.andrewabner.ns7.driverkit;
 				PRODUCT_NAME = "$(PRODUCT_BUNDLE_IDENTIFIER)";

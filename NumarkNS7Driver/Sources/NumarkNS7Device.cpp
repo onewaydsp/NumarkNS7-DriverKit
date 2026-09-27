@@ -20,6 +20,7 @@
 #include <USBDriverKit/IOUSBHostPipe.h>
 #include <USBDriverKit/USBDriverKitDefs.h>
 
+#include "NS7MIDIDriver.h"
 #include "NS7Protocol.h"
 #include "NumarkNS7Device.h"
 
@@ -104,6 +105,9 @@ struct NumarkNS7Device_IVars
     uint64_t  captureBytes = 0;
     uint64_t  midiMessages = 0;
     uint32_t  midiLogged = 0;       // reset with each stats line
+    IOLock        * midiClientLock = nullptr;
+    NS7MIDIDriver * midiClient = nullptr;       // guarded by midiClientLock, retained
+    NS7MIDIDriver * midiInClient = nullptr;     // set only while MidiInComplete parses
 };
 
 bool
@@ -115,6 +119,8 @@ NumarkNS7Device::init()
     ivars = IONewZero(NumarkNS7Device_IVars, 1);
     if (ivars == nullptr) return false;
     ivars->feedbackFrames = -1;
+    ivars->midiClientLock = IOLockAlloc();
+    if (ivars->midiClientLock == nullptr) return false;
     return true;
 }
 
@@ -143,6 +149,8 @@ NumarkNS7Device::free()
         ReleaseBulkSlots(ivars->capture, kCaptureInFlight);
         ReleaseBulkSlots(ivars->midiIn, kMidiInFlight);
         OSSafeReleaseNULL(ivars->control);
+        OSSafeReleaseNULL(ivars->midiClient);
+        if (ivars->midiClientLock) IOLockFree(ivars->midiClientLock);
     }
     IOSafeDeleteNULL(ivars, NumarkNS7Device_IVars, 1);
     super::free();
@@ -405,13 +413,26 @@ LogStats(NumarkNS7Device_IVars * iv)
     iv->midiLogged = 0;
 }
 
+// ── MIDI client ──────────────────────────────────────────────────────────────
+
+// Retained copy of the registered MIDI client, or nullptr.
+static NS7MIDIDriver *
+CopyMidiClient(NumarkNS7Device_IVars * iv)
+{
+    IOLockLock(iv->midiClientLock);
+    NS7MIDIDriver * client = iv->midiClient;
+    if (client) client->retain();
+    IOLockUnlock(iv->midiClientLock);
+    return client;
+}
+
 // Called by the raw MIDI parser for each complete UMP.
 static void
 OnMidiInUmp(void * ctx, const uint32_t * words, size_t count)
 {
     auto * iv = static_cast<NumarkNS7Device_IVars *>(ctx);
     iv->midiMessages++;
-    // TODO: hand the UMP to the CoreMIDI source once the MIDIDriverKit service exists.
+    if (iv->midiInClient) iv->midiInClient->DeliverMidiIn(words, uint32_t(count));
     if (iv->midiLogged++ >= kLoggedMidiPerStats) return;
     if (count == 1) Log("MIDI in %08x", words[0]);
     else            Log("MIDI in %08x %08x", words[0], words[1]);
@@ -542,7 +563,11 @@ IMPL(NumarkNS7Device, MidiInComplete)
     iv->stats[kPipeMidiIn].done++;
     uint8_t bytes[NS7::kMidiInDataBytes];
     const uint32_t n = NS7::ExtractMidiIn(slot.ptr, actualByteCount, bytes);
-    if (n) iv->midiParser.Push(bytes, n, OnMidiInUmp, iv);
+    if (n) {
+        iv->midiInClient = CopyMidiClient(iv);   // one lookup per transfer
+        iv->midiParser.Push(bytes, n, OnMidiInUmp, iv);
+        OSSafeReleaseNULL(iv->midiInClient);
+    }
     SubmitBulk(iv, kPipeMidiIn, slot, NS7::kMidiPacketBytes);
 }
 
@@ -657,6 +682,7 @@ kern_return_t
 IMPL(NumarkNS7Device, Stop)
 {
     ivars->stopping = true;
+    SetMidiClient(nullptr);
     if (ivars->playback[0].action) LogStats(ivars);
 
     for (size_t e = 0; e < kNumEndpoints; e++) {
@@ -697,4 +723,15 @@ NumarkNS7Device::GetPipe(uint8_t endpointAddress)
         if (kEndpoints[e] == endpointAddress) return ivars->pipes[e];
     }
     return nullptr;
+}
+
+void
+NumarkNS7Device::SetMidiClient(NS7MIDIDriver * client)
+{
+    if (client) client->retain();
+    IOLockLock(ivars->midiClientLock);
+    NS7MIDIDriver * old = ivars->midiClient;
+    ivars->midiClient = client;
+    IOLockUnlock(ivars->midiClientLock);
+    if (old) old->release();
 }
