@@ -98,6 +98,7 @@ struct NumarkNS7Device_IVars
     uint32_t midiOutLength = 0;     // MIDI bytes in the packet in flight; 0 = idle
     uint32_t midiOutRetries = 0;    // resends of the current packet after a STALL
     uint32_t midiOutBackoffTicks = 0;   // FeedbackComplete ticks to wait before sending again
+    bool     midiOutPauseLogged = false; // pause logged this stats period
 
     uint64_t playbackFrame = 0;     // next frame for a playback request
     uint64_t feedbackFrame = 0;
@@ -444,6 +445,7 @@ LogStats(NumarkNS7Device_IVars * iv)
     if (iv->midiLogged > kLoggedMidiPerStats)
         Log("%u MIDI messages not logged", iv->midiLogged - kLoggedMidiPerStats);
     iv->midiLogged = 0;
+    iv->midiOutPauseLogged = false;
 }
 
 // Clears a STALL on EP 0x04. Returns true if the pipe can be used again.
@@ -459,15 +461,18 @@ ClearMidiOutStall(NumarkNS7Device_IVars * iv)
     return true;
 }
 
-// Drops the packet in flight after its STALL retries ran out, and pauses
+// Drops the current packet after a STALL it can't get past (retries ran out,
+// or AsyncIO itself reported the stall), and pauses
 // MIDI out so a pipe that keeps stalling cannot crowd the feedback chain.
 static void
 GiveUpMidiOutPacket(NumarkNS7Device_IVars * iv)
 {
     iv->midiOutLost++;
     iv->midiOutLength = 0;
-    if (iv->midiOutBackoffTicks == 0)
+    if (!iv->midiOutPauseLogged) {
+        iv->midiOutPauseLogged = true;
         Log("EP 0x%02x keeps stalling: MIDI out paused for ~1 s", kEndpoints[kPipeMidiOut]);
+    }
     iv->midiOutBackoffTicks = kMidiOutStallBackoffTicks;
 }
 
@@ -478,8 +483,12 @@ SendMidiOut(NumarkNS7Device_IVars * iv)
                                                         iv->midiOut.action, kMidiOutTimeoutMs);
     if (ret != kIOReturnSuccess) {
         NoteError(iv, kPipeMidiOut, ret);
-        if (ret == kUSBHostReturnPipeStalled) ClearMidiOutStall(iv);
-        iv->midiOutLength = 0;
+        if (ret == kUSBHostReturnPipeStalled) {
+            ClearMidiOutStall(iv);
+            GiveUpMidiOutPacket(iv);   // counts it lost, starts the backoff, zeroes the length
+        } else {
+            iv->midiOutLength = 0;
+        }
     }
 }
 
